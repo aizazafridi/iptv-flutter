@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:iptv_flutter/application/recent_items.dart';
 import 'dart:io' as io;
 import 'package:test/test.dart';
 import 'package:iptv_flutter/domain/models.dart';
@@ -37,6 +38,66 @@ void main() {
     provider = XtreamProvider(client);
   });
   tearDown(() => provider.dispose());
+  test(
+    'live playback defaults to TS and respects an explicit provider format',
+    () async {
+      const live = ContentItem(
+        id: '42',
+        name: 'Channel',
+        type: ContentType.live,
+      );
+      final source = await provider.resolvePlayback(live);
+      expect(source.uri.pathSegments.last, '42.ts');
+      expect(source.isLive, isTrue);
+      expect(source.headers['User-Agent'], contains('VLC'));
+      const hls = ContentItem(
+        id: '43',
+        name: 'HLS channel',
+        type: ContentType.live,
+        extension: 'm3u8',
+      );
+      expect(
+        (await provider.resolvePlayback(hls)).uri.pathSegments.last,
+        '43.m3u8',
+      );
+    },
+  );
+  test(
+    'recent catalog maps timestamps, sorts and excludes unknown dates',
+    () async {
+      for (final type in [ContentType.movies, ContentType.series]) {
+        client.fixture = [
+          {'stream_id': 1, 'series_id': 1, 'name': 'Old', 'added': '100'},
+          {'stream_id': 2, 'series_id': 2, 'name': 'New', 'added': 200},
+          {
+            'stream_id': 3,
+            'series_id': 3,
+            'name': 'Unknown',
+            'added': 'invalid',
+          },
+          {
+            'stream_id': 4,
+            'series_id': 4,
+            'name': 'Updated',
+            'last_modified': '300',
+          },
+        ];
+        final catalog = await provider.getAllItems(type);
+        final recent = recentlyAdded([...catalog, catalog.first]);
+        expect(
+          recent.map((item) => item.name),
+          type == ContentType.series
+              ? ['Updated', 'New', 'Old']
+              : ['New', 'Old'],
+        );
+        expect(
+          catalog[1].addedAt,
+          DateTime.fromMillisecondsSinceEpoch(200000, isUtc: true),
+        );
+        expect(client.lastParams, isEmpty);
+      }
+    },
+  );
   test('catalog search omits category filter for movies and series', () async {
     for (final type in [ContentType.movies, ContentType.series]) {
       client.fixture = [

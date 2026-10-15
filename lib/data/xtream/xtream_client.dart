@@ -71,6 +71,10 @@ class XtreamClient {
   Future<dynamic> _download(Uri uri, int limit) async {
     final request = await _http.getUrl(uri);
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    request.headers.set(
+      HttpHeaders.userAgentHeader,
+      'VLC/3.0.21 LibVLC/3.0.21',
+    );
     final response = await request.close();
     if (response.statusCode != 200) {
       await response.drain<void>();

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'application/provider_registry.dart';
 import 'application/session.dart';
+import 'application/appearance.dart';
 import 'data/credential_store.dart';
 import 'presentation/home_screen.dart';
 
@@ -18,9 +19,11 @@ class StreamlaneApp extends StatefulWidget {
 }
 
 class _StreamlaneAppState extends State<StreamlaneApp> {
+  final appearance = AppAppearance();
   late final Session session = Session(
     ProviderRegistry(),
     const CredentialStore(),
+    appearance: appearance,
   );
   @override
   void initState() {
@@ -31,36 +34,42 @@ class _StreamlaneAppState extends State<StreamlaneApp> {
   @override
   void dispose() {
     session.dispose();
+    appearance.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Streamlane',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: const Color(0xff11101c),
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xff9970ed),
-        brightness: Brightness.dark,
-      ),
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xff11101c),
-        centerTitle: false,
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: const Color(0xff1b1a2b),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: appearance,
+    builder: (context, _) => MaterialApp(
+      title: 'Streamlane',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: appearance.brightness,
+        scaffoldBackgroundColor: appearance.background,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xff9970ed),
+          brightness: appearance.brightness,
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: appearance.background,
+          centerTitle: false,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: appearance.brightness == Brightness.dark
+              ? const Color(0xff1b1a2b)
+              : const Color(0xffe6e3ef),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          ),
         ),
       ),
+      home: HomeScreen(session: session, appearance: appearance),
     ),
-    home: HomeScreen(session: session),
   );
 }

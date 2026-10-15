@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iptv_flutter/domain/iptv_provider.dart';
 import 'package:iptv_flutter/domain/models.dart';
@@ -22,32 +23,49 @@ class FakeProvider implements IptvProvider {
     ContentItem(id: '42', name: 'Example title', type: category.type),
   ];
   int catalogCalls = 0;
+  int detailCalls = 0;
   @override
   Future<List<ContentItem>> getAllItems(ContentType type) async {
     catalogCalls++;
     return [
-      ContentItem(id: '42', name: 'Example title', type: type),
-      ContentItem(id: '88', name: 'Another category title', type: type),
+      ContentItem(
+        id: '42',
+        name: 'Example title',
+        type: type,
+        addedAt: DateTime.utc(2025),
+      ),
+      ContentItem(
+        id: '88',
+        name: 'Another category title',
+        type: type,
+        addedAt: DateTime.utc(2026),
+      ),
     ];
   }
 
   @override
-  Future<MediaDetails> getMovieDetails(ContentItem item) async =>
-      MediaDetails(item: item, synopsis: 'Movie synopsis');
+  Future<MediaDetails> getMovieDetails(ContentItem item) async {
+    detailCalls++;
+    return MediaDetails(item: item, synopsis: 'Movie synopsis');
+  }
+
   @override
-  Future<SeriesDetails> getSeriesDetails(ContentItem item) async =>
-      SeriesDetails(
-        MediaDetails(item: item, synopsis: 'Series synopsis'),
-        const [
-          Episode(
-            id: '50',
-            title: 'Pilot',
-            season: 1,
-            number: 1,
-            extension: 'mp4',
-          ),
-        ],
-      );
+  Future<SeriesDetails> getSeriesDetails(ContentItem item) async {
+    detailCalls++;
+    return SeriesDetails(
+      MediaDetails(item: item, synopsis: 'Series synopsis'),
+      const [
+        Episode(
+          id: '50',
+          title: 'Pilot',
+          season: 1,
+          number: 1,
+          extension: 'mp4',
+        ),
+      ],
+    );
+  }
+
   @override
   Future<PlaybackSource> resolvePlayback(
     ContentItem item, {
@@ -61,7 +79,37 @@ class FakeProvider implements IptvProvider {
 }
 
 void main() {
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   for (final type in [ContentType.movies, ContentType.series]) {
+    testWidgets('recently added ${type.name} spans categories newest first', (
+      tester,
+    ) async {
+      final provider = FakeProvider();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BrowseScreen(provider: provider, type: type),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Recently added'));
+      await tester.pumpAndSettle();
+      expect(find.text('Another category title'), findsOneWidget);
+      expect(find.text('Example title'), findsOneWidget);
+      final newest = tester.getTopLeft(find.text('Another category title'));
+      final older = tester.getTopLeft(find.text('Example title'));
+      expect(
+        newest.dy < older.dy || (newest.dy == older.dy && newest.dx < older.dx),
+        isTrue,
+      );
+      expect(provider.catalogCalls, 1);
+      expect(provider.detailCalls, 0);
+      await tester.tap(find.text('English (4K)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Another category title'), findsNothing);
+      await tester.tap(find.text('Recently added'));
+      await tester.pumpAndSettle();
+      expect(provider.catalogCalls, 1);
+    });
     testWidgets(
       'search ${type.name} across categories and keep catalog cached',
       (tester) async {
@@ -83,6 +131,8 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('No matching titles found.'), findsOneWidget);
         expect(provider.catalogCalls, 1);
+        expect(provider.detailCalls, 0);
+        expect(find.textContaining('actor'), findsNothing);
         await tester.enterText(find.byType(TextField), 'another');
         await tester.pumpAndSettle();
         await tester.tap(find.text('Another category title'));

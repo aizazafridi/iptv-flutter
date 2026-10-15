@@ -1,11 +1,11 @@
+import 'dart:convert';
 import '../../domain/iptv_provider.dart';
 import '../../domain/models.dart';
 import 'xtream_client.dart';
 
 /// All Xtream response mapping lives here. No raw dictionaries reach a screen.
-class XtreamProvider implements IptvProvider {
+class XtreamProvider implements IptvProvider, EpgProvider {
   final XtreamClient client;
-  final Map<String, String> _knownCast = {};
   @override
   final String displayName;
   XtreamProvider(this.client, {this.displayName = 'Xtream Codes'});
@@ -51,6 +51,14 @@ class XtreamProvider implements IptvProvider {
   }
 
   int _number(dynamic value) => int.tryParse(_text(value)) ?? 0;
+
+  DateTime? _timestamp(dynamic value) {
+    final seconds = int.tryParse(_text(value));
+    if (seconds == null || seconds <= 0 || seconds >= 8640000000000) {
+      return null;
+    }
+    return DateTime.fromMillisecondsSinceEpoch(seconds * 1000, isUtc: true);
+  }
 
   @override
   Future<Account> connect() async {
@@ -121,16 +129,17 @@ class XtreamProvider implements IptvProvider {
         type: type,
         artwork: _image(row['stream_icon'] ?? row['cover']),
         extension: row['container_extension']?.toString(),
-        cast: row['cast'] == null
-            ? _knownCast['${type.name}:${row[type == ContentType.series ? 'series_id' : 'stream_id']}']
-            : _text(row['cast']),
+        categoryId: row['category_id']?.toString() ?? categoryId,
+        addedAt:
+            _timestamp(row['added']) ??
+            (type == ContentType.series
+                ? _timestamp(row['last_modified'])
+                : null),
       );
     }).toList();
   }
 
   MediaDetails _details(ContentItem item, Map<String, dynamic> info) {
-    final cast = _text(info['cast']);
-    _knownCast['${item.type.name}:${item.id}'] = cast;
     return MediaDetails(
       item: item,
       synopsis: _text(info['plot'] ?? info['description']),
@@ -141,7 +150,9 @@ class XtreamProvider implements IptvProvider {
       releaseDate: _text(info['releasedate'] ?? info['releaseDate']),
       duration: _text(info['duration']),
       artwork:
-          _image(info['movie_image'] ?? info['cover_big'] ?? info['cover']) ??
+          _image(info['movie_image']) ??
+          _image(info['cover_big']) ??
+          _image(info['cover']) ??
           item.artwork,
     );
   }
@@ -160,6 +171,8 @@ class XtreamProvider implements IptvProvider {
       name: movie.name,
       type: movie.type,
       artwork: movie.artwork,
+      addedAt: movie.addedAt,
+      categoryId: movie.categoryId,
       extension:
           movieData['container_extension']?.toString() ?? movie.extension,
     );
@@ -167,6 +180,25 @@ class XtreamProvider implements IptvProvider {
       item,
       data['info'] is Map<String, dynamic> ? _map(data['info']) : {},
     );
+  }
+
+  Uri? _episodeArtwork(Map<String, dynamic> row) {
+    final info = row['info'] is Map ? row['info'] as Map : const {};
+    // Empty/invalid fields must not hide another valid provider image.
+    for (final value in [
+      info['movie_image'],
+      info['cover_big'],
+      info['cover'],
+      info['thumbnail'],
+      row['movie_image'],
+      row['cover_big'],
+      row['cover'],
+      row['thumbnail'],
+    ]) {
+      final image = _image(value);
+      if (image != null) return image;
+    }
+    return null;
   }
 
   @override
@@ -190,6 +222,7 @@ class XtreamProvider implements IptvProvider {
           Episode(
             id: _required(row, 'id'),
             title: _text(row['title']),
+            artwork: _episodeArtwork(row) ?? _details(series, info).artwork,
             season: _number(row['season'] ?? group.key),
             number: _number(row['episode_num']),
             extension: _text(row['container_extension']).isEmpty
@@ -226,13 +259,86 @@ class XtreamProvider implements IptvProvider {
         episode?.id ?? item.id,
         episode?.extension ??
             item.extension ??
-            (item.type == ContentType.live ? 'm3u8' : 'mp4'),
+            (item.type == ContentType.live ? 'ts' : 'mp4'),
       ),
       title: episode == null
           ? item.name
           : '${item.name} · S${episode.season} E${episode.number} · ${episode.title}',
       isLive: item.type == ContentType.live,
+      headers: const {'User-Agent': 'VLC/3.0.21 LibVLC/3.0.21'},
     );
+  }
+
+  // Unix timestamps avoid interpreting the provider's timezone as device time.
+  @override
+  Future<List<EpgProgramme>> getEpg(ContentItem channel) async {
+    if (channel.type != ContentType.live) return [];
+    List<EpgProgramme> short = [];
+    try {
+      short = _epgRows(
+        await client.request(
+          action: 'get_short_epg',
+          params: {'stream_id': channel.id, 'limit': '100'},
+        ),
+      );
+    } on ProviderException {
+      /* Try the full guide when short EPG is unsupported. */
+    }
+    if (short.any((p) => p.isCurrent(DateTime.now()))) return short;
+    try {
+      final full = _epgRows(
+        await client.request(
+          action: 'get_simple_data_table',
+          params: {'stream_id': channel.id},
+        ),
+      );
+      // Short EPG can omit the current show. Merge full EPG without duplicates.
+      final merged = <String, EpgProgramme>{};
+      for (final p in [...full, ...short]) {
+        merged['${p.start.millisecondsSinceEpoch}:${p.end.millisecondsSinceEpoch}:${p.title}'] =
+            p;
+      }
+      return merged.values.toList()..sort((a, b) => a.start.compareTo(b.start));
+    } on ProviderException {
+      if (short.isEmpty) rethrow;
+      return short;
+    }
+  }
+
+  List<EpgProgramme> _epgRows(dynamic response) {
+    final raw = _map(response)['epg_listings'];
+    if (raw == null || raw is List && raw.isEmpty) return [];
+    final result = <EpgProgramme>[];
+    for (final value in _list(raw)) {
+      if (value is! Map<String, dynamic>) continue;
+      final start = _timestamp(value['start_timestamp']);
+      final end = _timestamp(value['stop_timestamp'] ?? value['end_timestamp']);
+      // Do not guess a timezone for ambiguous server date strings.
+      if (start == null || end == null || !end.isAfter(start)) continue;
+      result.add(
+        EpgProgramme(
+          title: _epgText(value['title']),
+          description: _epgText(value['description']),
+          start: start,
+          end: end,
+        ),
+      );
+    }
+    result.sort((a, b) => a.start.compareTo(b.start));
+    return result;
+  }
+
+  String _epgText(dynamic value) {
+    final text = _text(value);
+    try {
+      final decoded = utf8.decode(base64.decode(base64.normalize(text)));
+      if (decoded.runes.any((r) => r < 32 && r != 10 && r != 13 && r != 9)) {
+        return text;
+      }
+      return decoded;
+    } catch (_) {
+      return text;
+    }
   }
 
   @override

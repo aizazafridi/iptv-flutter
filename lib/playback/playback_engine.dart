@@ -7,9 +7,13 @@ abstract interface class PlaybackEngine {
   Stream<Duration> get duration;
   Stream<bool> get playing;
   Stream<String> get errors;
+  Stream<List<SubtitleOption>> get subtitles;
+  Future<void> selectSubtitle(String id);
+  Future<void> addSubtitle(Uri uri);
   Future<void> open(PlaybackSource source);
   Future<void> togglePause();
   Future<void> seek(Duration position);
+  Future<void> setRate(double rate);
   Future<void> stop();
   Future<void> dispose();
   Widget surface();

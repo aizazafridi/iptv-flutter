@@ -36,6 +36,18 @@ class CredentialStore {
     return null;
   }
 
+  Future<List<AccountProfile>?> loadProfiles() async {
+    final saved = await storage.read(key: 'iptv_profiles');
+    if (saved == null) return null;
+    return (jsonDecode(saved) as List)
+        .map((row) => AccountProfile.fromJson(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> saveProfiles(List<AccountProfile> profiles) => storage.write(
+    key: 'iptv_profiles',
+    value: jsonEncode(profiles.map((profile) => profile.toJson()).toList()),
+  );
   Future<void> save(ProviderConfig config) =>
       storage.write(key: _key, value: jsonEncode(config.toJson()));
   Future<void> clear() => storage.delete(key: _key);

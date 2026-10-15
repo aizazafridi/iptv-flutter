@@ -19,7 +19,7 @@ New users enter server, username, password, and provider once. Credentials are s
 
 * `domain/`: typed models and `IptvProvider` contract, independent of API implementations.
 * `data/xtream/`: authenticated transport, response size limits, response mapping, playback URL resolution.
-* `data/starshare/`: Starshare adapter built on the Xtream implementation.
+* `data/xtream/configured_xtream_provider.dart`: Generic adapter for Xtream accounts, including the existing Starshare profile.
 * `application/`: provider registry and session lifecycle.
 * `presentation/`: responsive screens, focusable touch/D-pad navigation, details and episode selection.
 * `playback/`: separate player interface and media_kit adapter; no provider JSON or credentials in player controls.
@@ -61,4 +61,11 @@ Dependencies: [media_kit](https://pub.dev/packages/media_kit), [flutter_secure_s
 
 Use the search icon at the top of Movies or Series to search every category. The provider loads the full catalog once per search visit, then filters titles locally, ignoring case and matching all entered words. Results open the usual details and player. The category-local search remains available. Future providers implement `getAllItems(ContentType)` to support catalog search.
 
-Actor search matches title and cast across the catalog. When cast is absent from list responses, two background workers fetch details and update results progressively. Progress and Pause/Continue controls distinguish partial from complete actor results; failed requests can be retried. Cast is cached for the provider session, including titles already opened in details. The first pass can take time on large catalogs, and actor names unavailable from the provider cannot be matched. Leaving search stops scheduling further metadata requests.
+Search matches titles across all categories without fetching cast metadata. Movies and Series include Recently added, sorted newest first using added timestamps (or last_modified for series). Items without a usable timestamp are excluded from Recently added.
+
+Player subtitles: use the Subtitles button to select an embedded IPTV track, turn subtitles off, add an HTTP/HTTPS SRT/VTT URL, or search OpenSubtitles. The online dialog saves your API key securely, supports language selection and allows editing the title. Series playback titles containing S/E numbers automatically narrow searches to the episode. An OpenSubtitles API key is required; downloads are subject to service quotas. IPTV credentials are never sent to OpenSubtitles. Online result availability and subtitle timing depend on the chosen release.
+
+VOD seek controls include rewind/forward by 30 seconds and 3 minutes. Live streams do not offer these seek buttons.
+Accounts: startup shows a profile picker. Save up to five IPTV accounts, each with an account name and one of thirty original cinema-themed avatars. Switch account from Settings; account creation is available only in Settings, including before selecting an account. The startup picker also supports removing a saved account. Existing single-account credentials, preferences and history migrate to the first profile. Profile credentials and preferences use encrypted secure storage. Background, browsing layouts, subtitle key/style/selection, playback speed/seek interval/video display, My list and watching progress are isolated by profile.
+
+Category locks: set a password in Settings, then use the padlock next to a category (in the sidebar or category-row header). Selecting a locked category requires its password. Unlocking permits access for the active session; restarting or switching accounts locks it again. Removing a category lock or changing its password requires the current password. Locks also filter catalog search, Recently added, My list and Continue watching, and block direct detail/playback requests.

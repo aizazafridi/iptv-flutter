@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import '../application/watch_history.dart';
+import 'smooth_page_route.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'player_screen.dart';
 import 'widgets.dart';
+import 'my_list_button.dart';
 
 class DetailsScreen extends StatefulWidget {
   final IptvProvider provider;
@@ -17,15 +20,37 @@ class _DetailsScreenState extends State<DetailsScreen> {
   int? season;
   Episode? episode;
   bool resolving = false;
+  WatchEntry? previous;
+  late final history = WatchHistory.forProvider(widget.provider);
   @override
   void initState() {
     super.initState();
+    history.addListener(progressChanged);
     details = load();
   }
 
+  Future<void> progressChanged() async {
+    final saved = await history.latest(widget.item, episode: episode);
+    if (mounted) setState(() => previous = saved);
+  }
+
+  @override
+  void dispose() {
+    history.removeListener(progressChanged);
+    super.dispose();
+  }
+
   Future<(MediaDetails, List<Episode>)> load() async {
+    previous = await history.latest(widget.item);
     if (widget.item.type == ContentType.series) {
       final result = await widget.provider.getSeriesDetails(widget.item);
+      for (final entry in result.episodes) {
+        if (entry.id == previous?.episode?.id) {
+          episode = entry;
+          season = entry.season;
+          break;
+        }
+      }
       return (result.details, result.episodes);
     }
     return (await widget.provider.getMovieDetails(widget.item), <Episode>[]);
@@ -33,7 +58,10 @@ class _DetailsScreenState extends State<DetailsScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.item.name)),
+    appBar: AppBar(
+      title: Text(widget.item.name),
+      actions: [MyListButton(provider: widget.provider, item: widget.item)],
+    ),
     body: AsyncView(
       future: details,
       retry: () => setState(() => details = load()),
@@ -96,10 +124,15 @@ class _DetailsScreenState extends State<DetailsScreen> {
                           DropdownMenuItem(value: s, child: Text('Season $s')),
                     )
                     .toList(),
-                onChanged: (value) => setState(() {
-                  season = value;
-                  episode = null;
-                }),
+                onChanged: (value) {
+                  setState(() {
+                    season = value;
+                    episode = episodes
+                        .where((e) => e.season == value)
+                        .firstOrNull;
+                  });
+                  progressChanged();
+                },
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<Episode>(
@@ -118,7 +151,10 @@ class _DetailsScreenState extends State<DetailsScreen> {
                       ),
                     )
                     .toList(),
-                onChanged: (value) => setState(() => episode = value),
+                onChanged: (value) {
+                  setState(() => episode = value);
+                  progressChanged();
+                },
               ),
               const SizedBox(height: 20),
             ],
@@ -127,9 +163,21 @@ class _DetailsScreenState extends State<DetailsScreen> {
             FilledButton.icon(
               onPressed: resolving || (series && selected == null)
                   ? null
-                  : () => play(info.item, selected),
+                  : () => play(
+                      info.item,
+                      selected,
+                      episodes,
+                      artwork: info.artwork,
+                    ),
               icon: const Icon(Icons.play_arrow),
-              label: Text(resolving ? 'Preparing…' : 'Play'),
+              label: Text(
+                resolving
+                    ? 'Preparing…'
+                    : previous != null &&
+                          (!series || selected?.id == previous?.episode?.id)
+                    ? 'Resume'
+                    : 'Play',
+              ),
             ),
           ],
         );
@@ -161,17 +209,51 @@ class _DetailsScreenState extends State<DetailsScreen> {
     ),
   );
 
-  Future<void> play(ContentItem item, Episode? selected) async {
+  Future<void> play(
+    ContentItem item,
+    Episode? selected,
+    List<Episode> episodes, {
+    Uri? artwork,
+  }) async {
     setState(() => resolving = true);
     try {
-      final source = await widget.provider.resolvePlayback(
-        item,
-        episode: selected,
-      );
-      if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => PlayerScreen(source: source)),
-      );
+      Episode? current = selected;
+      while (mounted) {
+        final saved = await history.latest(item, episode: current);
+        final source = await widget.provider.resolvePlayback(
+          item,
+          episode: current,
+        );
+        if (!mounted) return;
+        final index = current == null
+            ? -1
+            : episodes.indexWhere((entry) => entry.id == current!.id);
+        final next = index >= 0 && index + 1 < episodes.length
+            ? episodes[index + 1]
+            : null;
+        final route = SmoothPageRoute<Episode>(
+          builder: (_) => PlayerScreen(
+            source: source,
+            history: history,
+            item: item,
+            episode: current,
+            nextEpisode: next,
+            episodes: episodes,
+            seriesArtwork: artwork,
+            resumeAt: saved?.position ?? Duration.zero,
+          ),
+        );
+        final requested = await Navigator.of(context).push(route);
+        // Allow the previous screen/player to close before opening the next stream.
+        await route.completed;
+        if (!mounted || requested == null) break;
+        current = requested;
+        setState(() {
+          episode = requested;
+          season = requested.season;
+        });
+      }
+      previous = await history.latest(item);
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(

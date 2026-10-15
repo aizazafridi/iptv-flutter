@@ -1,10 +1,10 @@
-import 'dart:async';
-import '../application/catalog_index.dart';
 import 'package:flutter/material.dart';
+import 'smooth_page_route.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'details_screen.dart';
 import 'widgets.dart';
+import 'my_list_button.dart';
 
 /// Search uses the provider contract; the screen never knows API action names.
 class CatalogSearchScreen extends StatefulWidget {
@@ -23,107 +23,15 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
   late Future<List<ContentItem>> catalog;
   final controller = TextEditingController();
   String query = '';
-  late final CatalogIndex index;
-  List<ContentItem> loadedItems = [];
-  Timer? debounce;
-  bool indexing = false;
-  int generation = 0;
-
-  Future<List<ContentItem>> loadCatalog() async {
-    final items = await widget.provider.getAllItems(widget.type);
-    if (mounted) {
-      loadedItems = items;
-      if (query.isNotEmpty) scheduleIndex();
-    }
-    return items;
-  }
-
-  void scheduleIndex() {
-    debounce?.cancel();
-    debounce = Timer(const Duration(milliseconds: 400), () {
-      if (mounted && query.isNotEmpty && !indexing && loadedItems.isNotEmpty) {
-        startIndex();
-      }
-    });
-  }
-
-  Future<void> startIndex({bool retryFailed = false}) async {
-    if (indexing || loadedItems.isEmpty) return;
-    final token = ++generation;
-    setState(() => indexing = true);
-    await index.enrich(
-      loadedItems,
-      cancelled: () => !mounted || token != generation,
-      onProgress: () {
-        if (mounted && token == generation) setState(() {});
-      },
-      retryFailed: retryFailed,
-    );
-    if (mounted && token == generation) setState(() => indexing = false);
-  }
-
-  void pauseIndex() {
-    generation++;
-    debounce?.cancel();
-    setState(() => indexing = false);
-  }
-
-  Widget indexingStatus() {
-    final unique = {
-      for (final item in loadedItems) index.key(item): item,
-    }.values;
-    final total = unique.length;
-    final known = unique.where(index.known).length;
-    final failed = unique
-        .where((item) => index.failed.contains(index.key(item)))
-        .length;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            indexing
-                ? 'Searching actor information: $known of $total titles checked'
-                : known == total
-                ? 'Title and actor search ready'
-                : 'Actor results are incomplete: $known of $total titles checked${failed > 0 ? ' · $failed unavailable' : ''}',
-          ),
-          if (indexing) ...[
-            const SizedBox(height: 6),
-            LinearProgressIndicator(
-              value: total == 0 ? null : (known + failed) / total,
-            ),
-            TextButton(
-              onPressed: pauseIndex,
-              child: const Text('Pause actor indexing'),
-            ),
-          ] else if (known < total)
-            TextButton(
-              onPressed: () => startIndex(retryFailed: true),
-              child: Text(
-                failed > 0
-                    ? 'Retry actor information'
-                    : 'Continue actor indexing',
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   @override
   void initState() {
     super.initState();
     // Load once per search visit, then filter locally without repeated API calls.
-    index = CatalogIndex.forProvider(widget.provider);
-    catalog = loadCatalog();
+    catalog = widget.provider.getAllItems(widget.type);
   }
 
   @override
   void dispose() {
-    generation++;
-    debounce?.cancel();
     controller.dispose();
     super.dispose();
   }
@@ -141,7 +49,7 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
             controller: controller,
             autofocus: true,
             decoration: InputDecoration(
-              hintText: 'Search by title or actor across all categories',
+              hintText: 'Search titles across all categories',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: query.isEmpty
                   ? null
@@ -150,42 +58,35 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
                       icon: const Icon(Icons.clear),
                       onPressed: () {
                         controller.clear();
-                        pauseIndex();
                         setState(() => query = '');
                       },
                     ),
             ),
             onChanged: (value) {
               setState(() => query = value.trim().toLowerCase());
-              if (query.isEmpty) {
-                pauseIndex();
-              } else {
-                scheduleIndex();
-              }
             },
           ),
         ),
-        if (query.isNotEmpty && loadedItems.isNotEmpty) indexingStatus(),
         Expanded(
           child: AsyncView(
             future: catalog,
-            retry: () => setState(() => catalog = loadCatalog()),
+            retry: () => setState(
+              () => catalog = widget.provider.getAllItems(widget.type),
+            ),
             builder: (items) {
               if (query.isEmpty) {
                 return const EmptyState(
-                  'Enter a title or actor name to search all categories.',
+                  'Enter a title to search all categories.',
                 );
               }
+              final terms = query.split(RegExp(r'\s+'));
               final seen = <String>{};
               final results = items.where((item) {
-                return index.matches(item, query) && seen.add(item.id);
+                return terms.every(item.name.toLowerCase().contains) &&
+                    seen.add(item.id);
               }).toList();
               if (results.isEmpty) {
-                return EmptyState(
-                  indexing
-                      ? 'No matches yet. Actor search is still indexing.'
-                      : 'No matching titles found.',
-                );
+                return const EmptyState('No matching titles found.');
               }
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -207,7 +108,7 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
                         final item = results[rowIndex];
                         return FocusCard(
                           onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
+                            SmoothPageRoute<void>(
                               builder: (_) => DetailsScreen(
                                 provider: widget.provider,
                                 item: item,
@@ -218,22 +119,10 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
                             children: [
                               Artwork(item.artwork, width: 52, height: 76),
                               const SizedBox(width: 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(item.name),
-                                    if (index.castFor(item).isNotEmpty)
-                                      Text(
-                                        index.castFor(item),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                  ],
-                                ),
+                              Expanded(child: Text(item.name)),
+                              MyListButton(
+                                provider: widget.provider,
+                                item: item,
                               ),
                               const Icon(Icons.chevron_right),
                             ],

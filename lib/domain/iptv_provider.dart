@@ -1,5 +1,10 @@
 import 'models.dart';
 
+/// Optional capability, keeping alternative IPTV integrations independent.
+abstract interface class EpgProvider {
+  Future<List<EpgProgramme>> getEpg(ContentItem channel);
+}
+
 /// UI and application services depend on this contract, never provider JSON.
 abstract interface class IptvProvider {
   String get displayName;
