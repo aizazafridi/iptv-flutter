@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'smooth_page_route.dart';
 import '../application/session.dart';
 import '../application/appearance.dart';
@@ -7,7 +8,9 @@ import '../domain/models.dart';
 import 'browse_screen.dart';
 import 'widgets.dart';
 import 'profile_avatar.dart';
+import 'profile_loading.dart';
 import 'system_clock.dart';
+import 'home_category_card.dart';
 
 class HomeScreen extends StatefulWidget {
   final Session session;
@@ -26,6 +29,68 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final bodyKey = GlobalKey();
+  final profileKeys = <String, GlobalKey>{};
+  final loadingKey = GlobalKey<ProfileLoadingState>();
+  AccountProfile? selectingProfile;
+  Offset loadingOrigin = Offset.zero;
+  Future<void> selectProfile(AccountProfile profile) async {
+    if (selectingProfile != null || widget.session.loading) return;
+    final profileBox =
+        profileKeys[profile.id]?.currentContext?.findRenderObject()
+            as RenderBox?;
+    final bodyBox = bodyKey.currentContext?.findRenderObject() as RenderBox?;
+    loadingOrigin = profileBox != null && bodyBox != null
+        ? profileBox.localToGlobal(profileBox.size.center(Offset.zero)) -
+              bodyBox.localToGlobal(bodyBox.size.center(Offset.zero))
+        : Offset.zero;
+    setState(() => selectingProfile = profile);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await widget.session.selectProfile(profile);
+    if (!mounted) return;
+    if (widget.session.error == null) await loadingKey.currentState?.finish();
+    if (mounted) setState(() => selectingProfile = null);
+  }
+
+  late final List<FocusNode> accountFields = List.generate(
+    4,
+    (index) => FocusNode(
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.select ||
+            event.logicalKey == LogicalKeyboardKey.enter) {
+          editField(index);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+          if (index < 3) {
+            accountFields[index + 1].requestFocus();
+          } else {
+            node.nextFocus();
+          }
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+          if (index > 0) {
+            accountFields[index - 1].requestFocus();
+          }
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+          avatarNodes[avatar].requestFocus();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+    ),
+  );
+  final avatarNodes = List.generate(
+    ProfileAvatar.names.length,
+    (_) => FocusNode(),
+  );
   final form = GlobalKey<FormState>();
   final server = TextEditingController(),
       username = TextEditingController(),
@@ -60,6 +125,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    for (final node in avatarNodes) {
+      node.dispose();
+    }
+    for (final node in accountFields) {
+      node.dispose();
+    }
     profileName.dispose();
     server.dispose();
     username.dispose();
@@ -151,11 +222,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? 'Edit account'
                 : widget.addAccountOnly
                 ? 'Add account'
-                : 'STREAMLANE',
+                : 'STREAMORA',
           ),
           actions: [
             if (!widget.addAccountOnly) const SystemClock(),
-            if (!widget.addAccountOnly && session.account != null)
+            if (!widget.addAccountOnly &&
+                session.account != null &&
+                selectingProfile == null)
               IconButton(
                 tooltip: 'Switch account',
                 iconSize: 32,
@@ -183,7 +256,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
               ),
-            if (!widget.addAccountOnly && session.activeProfile != null)
+            if (!widget.addAccountOnly &&
+                session.activeProfile != null &&
+                selectingProfile == null)
               PopupMenuButton<String>(
                 tooltip: 'Current account',
                 iconSize: 44,
@@ -221,13 +296,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
           ],
         ),
-        body: session.loading
-            ? const EmptyLoading()
-            : widget.addAccountOnly
-            ? login()
-            : session.account == null
-            ? profilePicker()
-            : dashboard(),
+        body: SizedBox.expand(
+          key: bodyKey,
+          child: selectingProfile != null
+              ? ProfileLoading(
+                  key: loadingKey,
+                  profile: selectingProfile!,
+                  origin: loadingOrigin,
+                  progress: session.loadingProgress ?? 0,
+                )
+              : session.loading
+              ? EmptyLoading(
+                  message: session.loadingMessage,
+                  progress: session.loadingProgress,
+                )
+              : widget.addAccountOnly
+              ? login()
+              : session.account == null
+              ? profilePicker()
+              : dashboard(),
+        ),
       );
     },
   );
@@ -250,13 +338,14 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               for (final profile in widget.session.profiles)
                 SizedBox(
+                  key: profileKeys.putIfAbsent(profile.id, () => GlobalKey()),
                   width: 220,
                   child: Column(
                     children: [
                       FocusCard(
                         autofocus:
                             widget.session.profiles.first.id == profile.id,
-                        onTap: () => widget.session.selectProfile(profile),
+                        onTap: () => selectProfile(profile),
                         child: Column(
                           children: [
                             ProfileAvatar(profile.avatar, size: 160),
@@ -284,132 +373,199 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   );
 
-  Widget login() => Center(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460),
-        child: Form(
-          key: form,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Your entertainment.\nOne place.',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                widget.editProfile != null
-                    ? 'Update your account details and avatar.'
-                    : 'Add your IPTV account, name and avatar.',
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: profileName,
-                maxLength: 30,
-                decoration: const InputDecoration(labelText: 'Account name'),
-                validator: (value) => value == null || value.trim().isEmpty
-                    ? 'Enter an account name'
-                    : null,
-              ),
-              const Text('Choose an avatar'),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (
-                    var index = 0;
-                    index < ProfileAvatar.names.length;
-                    index++
-                  )
-                    Tooltip(
-                      message: ProfileAvatar.names[index],
-                      child: InkWell(
-                        onTap: () => setState(() => avatar = index),
-                        borderRadius: BorderRadius.circular(32),
-                        child: Container(
-                          padding: const EdgeInsets.all(3),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: avatar == index
-                                  ? Theme.of(context).colorScheme.primary
-                                  : Colors.transparent,
-                              width: 3,
-                            ),
-                          ),
-                          child: ProfileAvatar(index, size: 48),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              TextFormField(
-                controller: server,
-                keyboardType: TextInputType.url,
-                autocorrect: false,
-                decoration: const InputDecoration(
-                  labelText: 'Server URL',
-                  hintText: 'https://your-server:port',
-                ),
-                validator: (value) {
-                  final uri = Uri.tryParse(value?.trim() ?? '');
-                  return uri != null &&
-                          ['http', 'https'].contains(uri.scheme) &&
-                          uri.host.isNotEmpty
-                      ? null
-                      : 'Enter a valid HTTP or HTTPS URL';
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: username,
-                autocorrect: false,
-                decoration: const InputDecoration(labelText: 'Username'),
-                validator: (value) => value == null || value.trim().isEmpty
-                    ? 'Enter your username'
-                    : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: password,
-                obscureText: true,
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: const InputDecoration(labelText: 'Password'),
-                onFieldSubmitted: (_) => connect(),
-                validator: (value) => value == null || value.isEmpty
-                    ? 'Enter your password'
-                    : null,
-              ),
-              if (widget.session.error != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Text(
-                    widget.session.error!,
-                    style: const TextStyle(color: Colors.orangeAccent),
-                  ),
-                ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: connect,
-                icon: const Icon(Icons.login),
-                label: Text(
-                  widget.editProfile != null ? 'Save changes' : 'Connect',
-                ),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
-              ),
-            ],
+  List<TextEditingController> get fieldControllers => [
+    profileName,
+    server,
+    username,
+    password,
+  ];
+  static const fieldLabels = [
+    'Account name',
+    'Server URL',
+    'Username',
+    'Password',
+  ];
+  bool editingField = false;
+  Future<void> editField(int index) async {
+    if (editingField) return;
+    editingField = true;
+    final draft = TextEditingController(text: fieldControllers[index].text);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(fieldLabels[index]),
+        content: SizedBox(
+          width: 440,
+          child: TextField(
+            controller: draft,
+            autofocus: true,
+            obscureText: index == 3,
+            autocorrect: false,
+            enableSuggestions: index != 3,
+            maxLength: index == 0 ? 30 : null,
+            keyboardType: index == 1 ? TextInputType.url : TextInputType.text,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (value) => Navigator.pop(dialogContext, value),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, draft.text),
+            child: const Text('Done'),
+          ),
+        ],
       ),
+    );
+    // The closing dialog may still paint its editor during the reverse animation.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    draft.dispose();
+    editingField = false;
+    if (!mounted) return;
+    if (value != null) setState(() => fieldControllers[index].text = value);
+    accountFields[index].requestFocus();
+  }
+
+  Widget accountField(int index) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: TextFormField(
+      controller: fieldControllers[index],
+      focusNode: accountFields[index],
+      autofocus: index == 0,
+      readOnly: true,
+      showCursor: false,
+      enableInteractiveSelection: false,
+      obscureText: index == 3,
+      onTap: () => editField(index),
+      decoration: InputDecoration(
+        labelText: fieldLabels[index],
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 14,
+        ),
+        suffixIcon: const Icon(Icons.edit_outlined, size: 18),
+      ),
+      validator: (value) {
+        if (value == null || value.trim().isEmpty) {
+          return 'Enter ${fieldLabels[index].toLowerCase()}';
+        }
+        if (index == 1) {
+          final uri = Uri.tryParse(value.trim());
+          if (uri == null ||
+              !['http', 'https'].contains(uri.scheme) ||
+              uri.host.isEmpty) {
+            return 'Enter a valid HTTP or HTTPS URL';
+          }
+        }
+        return null;
+      },
     ),
+  );
+
+  Widget accountAvatars() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const Text('Choose an avatar'),
+      const SizedBox(height: 12),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (var index = 0; index < ProfileAvatar.names.length; index++)
+            Tooltip(
+              message: ProfileAvatar.names[index],
+              child: InkWell(
+                focusNode: avatarNodes[index],
+                onTap: () => setState(() => avatar = index),
+                borderRadius: BorderRadius.circular(32),
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: avatar == index
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.transparent,
+                      width: 3,
+                    ),
+                  ),
+                  child: ProfileAvatar(index, size: 48),
+                ),
+              ),
+            ),
+        ],
+      ),
+    ],
+  );
+
+  Widget login() => LayoutBuilder(
+    builder: (context, constraints) {
+      final wide = constraints.maxWidth >= 700;
+      final fields = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [for (var index = 0; index < 4; index++) accountField(index)],
+      );
+      return Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: wide ? 900 : 460),
+            child: Form(
+              key: form,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (wide)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(width: 230, child: accountAvatars()),
+                        const SizedBox(width: 32),
+                        Expanded(child: fields),
+                      ],
+                    )
+                  else ...[
+                    fields,
+                    accountAvatars(),
+                  ],
+                  if (widget.session.error != null)
+                    Text(
+                      widget.session.error!,
+                      style: const TextStyle(color: Colors.orangeAccent),
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: connect,
+                        icon: const Icon(Icons.check),
+                        label: Text(
+                          widget.editProfile != null
+                              ? 'Save changes'
+                              : 'Connect',
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    },
   );
 
   Widget dashboard() {
@@ -429,8 +585,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Text(
                   'What are we watching?',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
                 ),
+                const SizedBox(height: 8),
                 if (session.error != null)
                   Text(
                     session.error!,
@@ -444,9 +601,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: session.provider!.supportedTypes
                       .map(
                         (type) => SizedBox(
-                          width: 280,
-                          child: FocusCard(
-                            autofocus: type == ContentType.live,
+                          // Reserve page padding and gaps so all categories fit on TV.
+                          width: constraints.maxWidth >= 700
+                              ? ((constraints.maxWidth -
+                                            48 -
+                                            12 *
+                                                (session
+                                                        .provider!
+                                                        .supportedTypes
+                                                        .length -
+                                                    1)) /
+                                        session.provider!.supportedTypes.length)
+                                    .clamp(0, 330)
+                              : (constraints.maxWidth - 48).clamp(0, 330),
+                          child: HomeCategoryCard(
+                            type: type,
                             onTap: () => Navigator.of(context).push(
                               SmoothPageRoute<void>(
                                 builder: (_) => BrowseScreen(
@@ -454,33 +623,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                   type: type,
                                   appearance: widget.appearance,
                                 ),
-                              ),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 18),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    switch (type) {
-                                      ContentType.live => Icons.live_tv,
-                                      ContentType.movies =>
-                                        Icons.movie_outlined,
-                                      ContentType.series =>
-                                        Icons.video_library_outlined,
-                                    },
-                                    size: 64,
-                                    color: const Color(0xffc1a8ff),
-                                  ),
-                                  const SizedBox(height: 30),
-                                  Text(
-                                    type.label,
-                                    style: const TextStyle(
-                                      fontSize: 30,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
                               ),
                             ),
                           ),
@@ -498,16 +640,18 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class EmptyLoading extends StatelessWidget {
-  const EmptyLoading({super.key});
+  final String message;
+  final double? progress;
+  const EmptyLoading({super.key, this.message = 'Loading', this.progress});
   @override
   Widget build(BuildContext context) => const Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        CircularProgressIndicator(),
-        SizedBox(height: 20),
-        Text('Connecting to your account…'),
-      ],
+    child: SizedBox(
+      width: 32,
+      height: 32,
+      child: CircularProgressIndicator(
+        strokeWidth: 3,
+        semanticsLabel: 'Loading',
+      ),
     ),
   );
 }

@@ -1,14 +1,19 @@
+import 'recordings_library_screen.dart';
+import 'live_my_list_panel.dart';
+import '../application/live_favourite_groups.dart';
+import 'title_access.dart';
+import '../application/recent_catalog_cache.dart';
 import 'package:flutter/material.dart';
-import 'smooth_page_route.dart';
+import 'activation_text_field.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
-import '../application/recent_items.dart';
+import 'package:flutter/services.dart';
+import 'smooth_page_route.dart';
 import '../application/appearance.dart';
 import '../application/watch_history.dart';
 import '../application/my_list.dart';
 import '../application/category_locks.dart';
 import '../data/locked_provider.dart';
 import 'lock_password_dialog.dart';
-import 'my_list_button.dart';
 import 'category_card_row.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
@@ -36,17 +41,149 @@ class _BrowseScreenState extends State<BrowseScreen> {
   Future<List<ContentItem>>? items;
   Category? selected;
   String search = '';
-  bool get cardMode => widget.appearance?.usesCards(widget.type) ?? false;
+  String liveMyListGroup = LiveFavouriteGroups.all;
+  bool? cardsOverride;
+  bool get cardMode =>
+      cardsOverride ?? widget.appearance?.usesCards(widget.type) ?? false;
+  Future<void> toggleView() async {
+    final next = !cardMode;
+    if (next) {
+      final saved = await myList.items(widget.type).then(visibleSavedItems);
+      final watching = await history.items(widget.type).then(visibleSavedItems);
+      initialMyList = Future.value(saved);
+      initialContinue = Future.value(watching);
+      preferredInitialRow = saved.isNotEmpty
+          ? 0
+          : widget.type != ContentType.live && watching.isNotEmpty
+          ? 1
+          : widget.type != ContentType.live
+          ? 2
+          : 1;
+    }
+    if (!mounted) return;
+    setState(() {
+      cardsOverride = next;
+      initialTitleFocused = false;
+      initialRevealScheduled = false;
+      readyTitleRows.clear();
+      emptyCardRows.clear();
+    });
+    await widget.appearance?.setCards(widget.type, next);
+  }
+
+  String categorySort = 'provider', titleSort = 'provider';
+  final Map<String, DateTime> categoryDates = {};
+  bool sortingCategories = false;
+  List<ContentItem> sortTitles(List<ContentItem> source) {
+    final result = List<ContentItem>.of(source);
+    if (titleSort == 'name') {
+      result.sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+    }
+    if (titleSort == 'date') {
+      result.sort((a, b) {
+        if (a.addedAt == null) return b.addedAt == null ? 0 : 1;
+        if (b.addedAt == null) return -1;
+        return b.addedAt!.compareTo(a.addedAt!);
+      });
+    }
+    return result;
+  }
+
+  List<Category> sortCategories(List<Category> source) {
+    final result = List<Category>.of(source);
+    if (categorySort == 'name') {
+      result.sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+    }
+    if (categorySort == 'date') {
+      result.sort(
+        (a, b) => (categoryDates[b.id] ?? DateTime(1970)).compareTo(
+          categoryDates[a.id] ?? DateTime(1970),
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<void> changeCategorySort(String value) async {
+    if (sortingCategories) return;
+    if (value == 'date') {
+      setState(() => sortingCategories = true);
+      try {
+        final catalog = await RecentCatalogCache.load(
+          widget.provider,
+          widget.type,
+        );
+        categoryDates.clear();
+        for (final item in catalog) {
+          if (item.categoryId != null && item.addedAt != null) {
+            final old = categoryDates[item.categoryId!];
+            if (old == null || item.addedAt!.isAfter(old)) {
+              categoryDates[item.categoryId!] = item.addedAt!;
+            }
+          }
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(safeMessage(error))));
+        }
+        if (mounted) setState(() => sortingCategories = false);
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      categorySort = value;
+      sortingCategories = false;
+    });
+  }
+
+  void openRecordings() => Navigator.of(context).push(
+    SmoothPageRoute<void>(
+      builder: (_) =>
+          RecordingsLibraryScreen(provider: widget.provider, type: widget.type),
+    ),
+  );
+  Widget recordingsCategory() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+    child: ListTile(
+      dense: true,
+      leading: const Icon(Icons.video_library_outlined),
+      title: const Text('Recordings'),
+      onTap: openRecordings,
+    ),
+  );
+  Widget sortControl({required bool categories}) => PopupMenuButton<String>(
+    tooltip: categories ? 'Sort categories' : 'Sort titles',
+    icon: Icon(categories ? Icons.sort_by_alpha : Icons.sort),
+    initialValue: categories ? categorySort : titleSort,
+    onSelected: (value) {
+      if (categories) {
+        changeCategorySort(value);
+      } else {
+        setState(() => titleSort = value);
+      }
+    },
+    itemBuilder: (_) => const [
+      PopupMenuItem(value: 'provider', child: Text('Provider order')),
+      PopupMenuItem(value: 'name', child: Text('Name (A-Z)')),
+      PopupMenuItem(value: 'date', child: Text('Date added (newest first)')),
+    ],
+  );
   final Map<String, Future<List<ContentItem>>> rowItems = {};
   Future<List<ContentItem>> loadCategory(
     Category category, {
     bool refresh = false,
   }) {
     if (refresh) rowItems.remove(category.id);
-    return rowItems.putIfAbsent(
-      category.id,
-      () => widget.provider.getItems(category),
-    );
+    return rowItems
+        .putIfAbsent(category.id, () => widget.provider.getItems(category))
+        .then(sortTitles);
   }
 
   bool showingRecent = false;
@@ -57,13 +194,184 @@ class _BrowseScreenState extends State<BrowseScreen> {
   late final myList = MyList.forProvider(widget.provider);
   late final locks = CategoryLocks.forProvider(widget.provider);
   int historyRevision = 0;
+  final cardScroll = ScrollController();
+  final Map<int, FocusNode> cardRowNodes = {};
+  final Map<(int, int), FocusNode> titleNodes = {};
+  FocusNode titleNode(int row, int column) => titleNodes.putIfAbsent((
+    row,
+    column,
+  ), () => FocusNode(debugLabel: 'title $row:$column'));
+  Future<List<ContentItem>>? initialMyList;
+  Future<List<ContentItem>>? initialContinue;
+  int preferredInitialRow = 0;
+  bool initialRevealScheduled = false;
+  bool initialTitleFocused = false;
+  int? pendingTitleRow;
+  final Set<int> emptyCardRows = {};
+  final Set<int> readyTitleRows = {};
+  void emptyRowReady(int row) {
+    emptyCardRows.add(row);
+    readyTitleRows.remove(row);
+  }
+
+  void focusInitialTitle(int row) {
+    emptyCardRows.remove(row);
+    readyTitleRows.add(row);
+    if (!initialTitleFocused) {
+      if (!readyTitleRows.contains(preferredInitialRow)) return;
+      row = preferredInitialRow;
+    }
+    if ((initialTitleFocused && pendingTitleRow != row) ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    final node = titleNode(row, 0);
+    if (node.context == null) return;
+    pendingTitleRow = null;
+    initialTitleFocused = true;
+    activeCardRow = row;
+    node.requestFocus();
+    if (cardScroll.hasClients && !movingRows) {
+      cardScroll.animateTo(
+        (row * 280.0).clamp(0, cardScroll.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOutCubic,
+      );
+    }
+    // Apply once more after Flutter resolves any queued route autofocus.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && node.context != null && activeCardRow == row) {
+        node.requestFocus();
+      }
+    });
+  }
+
+  final Map<int, CardRowNavigation> rowNavigation = {};
+  CardRowNavigation navigationFor(int row) =>
+      rowNavigation.putIfAbsent(row, () => CardRowNavigation());
+  bool movingRows = false;
+  FocusNode rowNode(int index) => cardRowNodes.putIfAbsent(
+    index,
+    () => FocusNode(debugLabel: 'category row $index'),
+  );
+  Future<void> moveRow(int target) async {
+    if (movingRows || !cardScroll.hasClients) return;
+    movingRows = true;
+    pendingTitleRow = target;
+    try {
+      await cardScroll.animateTo(
+        (target * 280.0).clamp(0, cardScroll.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOutCubic,
+      );
+      if (!mounted) return;
+      final focused = await navigationFor(target).focusFirst?.call() ?? false;
+      if (focused) pendingTitleRow = null;
+    } finally {
+      movingRows = false;
+    }
+  }
+
+  int cardRowCount = 0;
+  int? activeCardRow;
+  bool cardRemoteKeys(KeyEvent event) {
+    if (!mounted ||
+        !cardMode ||
+        ModalRoute.of(context)?.isCurrent != true ||
+        (event is! KeyDownEvent && event is! KeyRepeatEvent)) {
+      return false;
+    }
+    final step = event.logicalKey == LogicalKeyboardKey.arrowDown
+        ? 1
+        : event.logicalKey == LogicalKeyboardKey.arrowUp
+        ? -1
+        : 0;
+    final focus = FocusManager.instance.primaryFocus;
+    int? row;
+    for (final entry in titleNodes.entries) {
+      if (entry.value.hasPrimaryFocus) {
+        row = entry.key.$1;
+        break;
+      }
+    }
+    row ??= cardRowNodes.entries
+        .where((entry) => entry.value.hasPrimaryFocus)
+        .map((entry) => entry.key)
+        .firstOrNull;
+    row ??= focus?.ancestors
+        .where((node) => node.debugLabel?.startsWith('card group ') == true)
+        .map((node) => int.tryParse(node.debugLabel!.substring(11)))
+        .whereType<int>()
+        .firstOrNull;
+    if (row != null &&
+        step == 1 &&
+        titleNodes.entries.any(
+          (entry) => entry.key.$1 == row && entry.value.hasPrimaryFocus,
+        )) {
+      activeCardRow = row;
+      rowNode(row).requestFocus();
+      return true;
+    }
+    if (row != null && step == -1 && rowNode(row).hasPrimaryFocus) {
+      navigationFor(row).focusFirst?.call();
+      return true;
+    }
+    if (row != null &&
+        event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+        rowNode(row).hasPrimaryFocus) {
+      final titles =
+          titleNodes.entries
+              .where(
+                (entry) => entry.key.$1 == row && entry.value.context != null,
+              )
+              .toList()
+            ..sort((a, b) => b.key.$2.compareTo(a.key.$2));
+      if (titles.isNotEmpty) {
+        titles.first.value.requestFocus();
+        return true;
+      }
+    }
+    if (step == 0) return false;
+    // A lazy row can be detached while scrolling. Retain its index so Up can
+    // recover focus rather than handing navigation to the root focus scope.
+    if (focus is FocusScopeNode) row ??= activeCardRow;
+    if (row == null) return false;
+    var next = row + step;
+    while (next >= 0 && next < cardRowCount && emptyCardRows.contains(next)) {
+      next += step;
+    }
+    if (next < 0 || next >= cardRowCount) return true;
+    activeCardRow = next;
+    moveRow(next);
+    return true;
+  }
+
   late final history = WatchHistory.forProvider(widget.provider);
   Future<List<ContentItem>>? recentCatalog;
   @override
   void initState() {
     super.initState();
+    HardwareKeyboard.instance.addHandler(cardRemoteKeys);
     categories = widget.provider.getCategories(widget.type).then((rows) async {
       await locks.load();
+      if (cardMode) {
+        // Resolve the small local lists before choosing initial focus. Network
+        // completion order must never let Recently Added bypass saved titles.
+        final saved = await myList.items(widget.type).then(visibleSavedItems);
+        final watching = await history
+            .items(widget.type)
+            .then(visibleSavedItems);
+        initialMyList = Future.value(saved);
+        initialContinue = Future.value(watching);
+        preferredInitialRow = saved.isNotEmpty
+            ? 0
+            : widget.type != ContentType.live && watching.isNotEmpty
+            ? 1
+            : widget.type != ContentType.live
+            ? 2
+            : 1;
+      }
       return rows;
     });
     myList.addListener(myListChanged);
@@ -78,6 +386,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
   void historyChanged() {
     if (!mounted) return;
     setState(() {
+      initialContinue = null;
+      emptyCardRows.remove(1);
+      readyTitleRows.remove(1);
       historyRevision++;
       if (showingContinue) {
         items = history.items(widget.type).then(visibleSavedItems);
@@ -88,6 +399,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
   void myListChanged() {
     if (!mounted) return;
     setState(() {
+      initialMyList = null;
+      emptyCardRows.remove(0);
+      readyTitleRows.remove(0);
       listRevision++;
       if (showingMyList) {
         items = myList.items(widget.type).then(visibleSavedItems);
@@ -97,6 +411,14 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(cardRemoteKeys);
+    cardScroll.dispose();
+    for (final node in titleNodes.values) {
+      node.dispose();
+    }
+    for (final node in cardRowNodes.values) {
+      node.dispose();
+    }
     myList.removeListener(myListChanged);
     history.removeListener(historyChanged);
     locks.removeListener(locksChanged);
@@ -113,16 +435,20 @@ class _BrowseScreenState extends State<BrowseScreen> {
   });
   void locksChanged() {
     if (!mounted) return;
+    RecentCatalogCache.invalidate(widget.provider);
     setState(() {
+      categories = widget.provider.getCategories(widget.type);
       lockRevision++;
       rowItems.clear();
       recentCatalog = null;
       listRevision++;
       historyRevision++;
       if (showingRecent) {
-        recentCatalog = widget.provider
-            .getAllItems(widget.type)
-            .then(recentlyAdded);
+        recentCatalog = RecentCatalogCache.load(
+          widget.provider,
+          widget.type,
+          refresh: true,
+        );
         items = recentCatalog;
       }
       if (selected != null &&
@@ -140,38 +466,6 @@ class _BrowseScreenState extends State<BrowseScreen> {
     });
   }
 
-  Widget lockButton(Category category) => IconButton(
-    tooltip: locks.configured(category)
-        ? 'Remove category lock'
-        : 'Lock category',
-    icon: Icon(
-      locks.configured(category) ? Icons.lock : Icons.lock_open_outlined,
-    ),
-    onPressed: () async {
-      try {
-        String password = '';
-        if (locks.configured(category)) {
-          final value = await showDialog<String>(
-            context: context,
-            builder: (_) => LockPasswordDialog(locks: locks),
-          );
-          if (value == null) return;
-          password = value;
-        }
-        await locks.setLocked(
-          category,
-          !locks.configured(category),
-          password: password,
-        );
-      } catch (exception) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(safeMessage(exception))));
-        }
-      }
-    },
-  );
   Future<void> select(Category category) async {
     await locks.load();
     if (!mounted) return;
@@ -200,9 +494,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
     showingContinue = false;
     selected = Category('__recent__', 'Recently added', widget.type);
     if (refresh) recentCatalog = null;
-    recentCatalog ??= widget.provider
-        .getAllItems(widget.type)
-        .then(recentlyAdded);
+    recentCatalog ??= RecentCatalogCache.load(
+      widget.provider,
+      widget.type,
+      refresh: refresh,
+    );
     items = recentCatalog;
     search = '';
   });
@@ -231,33 +527,55 @@ class _BrowseScreenState extends State<BrowseScreen> {
       appBar: AppBar(
         title: Text(widget.type.label),
         actions: [
-          if (widget.type != ContentType.live)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Tooltip(
-                message: 'Search all categories',
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(140, 48),
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    textStyle: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+          IconButton(
+            tooltip: cardMode
+                ? 'Use category list view'
+                : 'Use horizontal cards view',
+            icon: Icon(
+              cardMode
+                  ? Icons.view_list_outlined
+                  : Icons.view_carousel_outlined,
+            ),
+            onPressed: toggleView,
+          ),
+          sortControl(categories: true),
+          sortControl(categories: false),
+          if (sortingCategories)
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Tooltip(
+              message: 'Search all categories',
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(110, 36),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
                   ),
-                  icon: const Icon(Icons.search, size: 28),
-                  label: const Text('Search all'),
-                  onPressed: () => Navigator.of(context).push(
-                    SmoothPageRoute<void>(
-                      builder: (_) => CatalogSearchScreen(
-                        provider: widget.provider,
-                        type: widget.type,
-                      ),
+                  textStyle: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                icon: const Icon(Icons.search, size: 18),
+                label: const Text('Search all'),
+                onPressed: () => Navigator.of(context).push(
+                  SmoothPageRoute<void>(
+                    builder: (_) => CatalogSearchScreen(
+                      provider: widget.provider,
+                      type: widget.type,
+                      onOpen: openItem,
                     ),
                   ),
                 ),
               ),
             ),
+          ),
         ],
         leading: BackButton(
           onPressed: () {
@@ -318,108 +636,145 @@ class _BrowseScreenState extends State<BrowseScreen> {
     future: categories,
     retry: () =>
         setState(() => categories = widget.provider.getCategories(widget.type)),
-    builder: (rows) {
+    builder: (unsortedRows) {
+      final rows = sortCategories(unsortedRows);
       final hasRecent = widget.type != ContentType.live;
-
-      return ListView.builder(
-        scrollCacheExtent: const ScrollCacheExtent.pixels(0),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        itemCount: rows.length + (hasRecent ? 2 : 0) + 1,
-        itemBuilder: (_, index) {
-          if (index == 0) {
-            return CategoryCardRow(
-              key: ValueKey('my-list:$listRevision'),
-              title: 'My list',
-              load: (_) => myList.items(widget.type).then(visibleSavedItems),
-              onMore: selectMyList,
-              onOpen: openItem,
-              itemAction: (item) =>
-                  MyListButton(provider: widget.provider, item: item),
-            );
-          }
-          index--;
-          if (hasRecent && index == 0) {
-            return CategoryCardRow(
-              key: ValueKey('continue-row:$historyRevision'),
-              title: 'Continue watching',
-              load: (_) => history.items(widget.type).then(visibleSavedItems),
-              onMore: selectContinue,
-              onOpen: openItem,
-              itemAction: (item) =>
-                  MyListButton(provider: widget.provider, item: item),
-            );
-          }
-          if (hasRecent && index == 1) {
-            return CategoryCardRow(
-              key: ValueKey('recent-row:$lockRevision'),
-              title: 'Recently added',
-              load: (refresh) {
-                if (refresh) recentCatalog = null;
-                return recentCatalog ??= widget.provider
-                    .getAllItems(widget.type)
-                    .then(recentlyAdded);
-              },
-              onMore: selectRecent,
-              onOpen: openItem,
-              itemAction: (item) =>
-                  MyListButton(provider: widget.provider, item: item),
-            );
-          }
-          final category = rows[index - (hasRecent ? 2 : 0)];
-          if (locks.isLocked(category)) {
-            return Padding(
-              padding: const EdgeInsets.all(12),
-              child: FocusCard(
-                onTap: () => select(category),
-                child: Row(
-                  children: [
-                    const Icon(Icons.lock_outline),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(category.name)),
-                    lockButton(category),
-                  ],
-                ),
+      cardRowCount = rows.length + (hasRecent ? 2 : 0) + 1;
+      if (!initialRevealScheduled) {
+        initialRevealScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !initialTitleFocused) moveRow(preferredInitialRow);
+        });
+      }
+      return Column(
+        children: [
+          recordingsCategory(),
+          Expanded(
+            child: ListView.builder(
+              key: ValueKey((categorySort, titleSort)),
+              controller: cardScroll,
+              scrollCacheExtent: const ScrollCacheExtent.pixels(338),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              itemCount: rows.length + (hasRecent ? 2 : 0) + 1,
+              itemExtent: 280,
+              itemBuilder: (_, index) => Focus(
+                canRequestFocus: false,
+                debugLabel: 'card group $index',
+                child: buildCardRow(rows, index),
               ),
-            );
-          }
-          return CategoryCardRow(
-            key: ValueKey(
-              lockRevision == 0
-                  ? 'category-row:${category.id}'
-                  : 'category-row:${category.id}:$lockRevision',
             ),
-            headerAction: lockButton(category),
-            title: category.name,
-            load: (refresh) => loadCategory(category, refresh: refresh),
-            onMore: () => select(category),
-            onOpen: openItem,
-            itemAction: (item) =>
-                MyListButton(provider: widget.provider, item: item),
-          );
-        },
+          ),
+        ],
       );
     },
   );
+  Widget buildCardRow(List<Category> rows, int index) {
+    final rowIndex = index;
+    final hasRecent = widget.type != ContentType.live;
+
+    if (index == 0) {
+      return CategoryCardRow(
+        entryFocusNode: rowNode(rowIndex),
+        navigation: navigationFor(rowIndex),
+        itemFocusNode: (column) => titleNode(rowIndex, column),
+        onTitleReady: () => focusInitialTitle(rowIndex),
+        onEmpty: () => emptyRowReady(rowIndex),
+        key: ValueKey('my-list:$listRevision'),
+        title: 'My list',
+        load: (_) =>
+            initialMyList ?? myList.items(widget.type).then(visibleSavedItems),
+        onMore: selectMyList,
+        onOpen: openItem,
+      );
+    }
+    index--;
+    if (hasRecent && index == 0) {
+      return CategoryCardRow(
+        entryFocusNode: rowNode(rowIndex),
+        navigation: navigationFor(rowIndex),
+        itemFocusNode: (column) => titleNode(rowIndex, column),
+        onTitleReady: () => focusInitialTitle(rowIndex),
+        onEmpty: () => emptyRowReady(rowIndex),
+        key: ValueKey('continue-row:$historyRevision'),
+        title: 'Continue watching',
+        load: (_) =>
+            initialContinue ??
+            history.items(widget.type).then(visibleSavedItems),
+        onMore: selectContinue,
+        onOpen: openItem,
+      );
+    }
+    if (hasRecent && index == 1) {
+      return CategoryCardRow(
+        entryFocusNode: rowNode(rowIndex),
+        navigation: navigationFor(rowIndex),
+        itemFocusNode: (column) => titleNode(rowIndex, column),
+        onTitleReady: () => focusInitialTitle(rowIndex),
+        onEmpty: () => emptyRowReady(rowIndex),
+        key: ValueKey('recent-row:$lockRevision'),
+        title: 'Recently added',
+        load: (refresh) {
+          if (refresh) recentCatalog = null;
+          return recentCatalog ??= RecentCatalogCache.load(
+            widget.provider,
+            widget.type,
+            refresh: refresh,
+          );
+        },
+        onMore: selectRecent,
+        onOpen: openItem,
+      );
+    }
+    final category = rows[index - (hasRecent ? 2 : 0)];
+    if (locks.isLocked(category)) {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: FocusCard(
+          focusNode: rowNode(rowIndex),
+          onTap: () => select(category),
+          child: Row(
+            children: [
+              const Icon(Icons.lock_outline),
+              const SizedBox(width: 12),
+              Expanded(child: Text(category.name)),
+            ],
+          ),
+        ),
+      );
+    }
+    return CategoryCardRow(
+      entryFocusNode: rowNode(rowIndex),
+      navigation: navigationFor(rowIndex),
+      itemFocusNode: (column) => titleNode(rowIndex, column),
+      onTitleReady: () => focusInitialTitle(rowIndex),
+      onEmpty: () => emptyRowReady(rowIndex),
+      key: ValueKey(
+        lockRevision == 0
+            ? 'category-row:${category.id}'
+            : 'category-row:${category.id}:$lockRevision',
+      ),
+      title: category.name,
+      load: (refresh) => loadCategory(category, refresh: refresh),
+      onMore: () => select(category),
+      onOpen: openItem,
+    );
+  }
 
   Widget categoryList() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      recordingsCategory(),
       Padding(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
         child: FocusCard(
+          stableSize: widget.type == ContentType.live,
           padding: widget.type == ContentType.live
               ? const EdgeInsets.symmetric(horizontal: 14, vertical: 2)
               : const EdgeInsets.all(14),
           selected: showingMyList && selected != null,
           onTap: selectMyList,
           child: widget.type == ContentType.live
-              ? const SizedBox(
-                  height: 48,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('My list'),
-                  ),
-                )
+              ? const Row(children: [Expanded(child: Text('My list'))])
               : const Text('My list'),
         ),
       ),
@@ -454,134 +809,163 @@ class _BrowseScreenState extends State<BrowseScreen> {
           retry: () => setState(() {
             categories = widget.provider.getCategories(widget.type);
           }),
-          builder: (rows) => rows.isEmpty
-              ? const EmptyState('No categories available')
-              : ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: rows.length,
-                  itemBuilder: (_, index) {
-                    final category = rows[index];
-                    return FocusCard(
-                      padding: widget.type == ContentType.live
-                          ? const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 2,
-                            )
-                          : const EdgeInsets.all(14),
-                      autofocus: index == 0 && widget.type == ContentType.live,
-                      selected:
-                          !showingMyList &&
-                          !showingRecent &&
-                          !showingContinue &&
-                          selected?.id == category.id,
-                      onTap: () => select(category),
-                      child: Row(
-                        children: [
-                          Expanded(child: Text(category.name)),
-                          lockButton(category),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ),
-    ],
-  );
-
-  Widget itemList() => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              selected!.name,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              key: ValueKey(selected!.id),
-              decoration: const InputDecoration(
-                hintText: 'Search this category',
-                prefixIcon: Icon(Icons.search),
-              ),
-              onChanged: (value) =>
-                  setState(() => search = value.toLowerCase()),
-            ),
-          ],
-        ),
-      ),
-      Expanded(
-        child: AsyncView(
-          future: items!,
-          retry: () => showingMyList
-              ? selectMyList()
-              : showingContinue
-              ? selectContinue()
-              : showingRecent
-              ? selectRecent(refresh: true)
-              : setState(() => items = loadCategory(selected!, refresh: true)),
-          builder: (rows) {
-            final filtered = rows
-                .where((item) => item.name.toLowerCase().contains(search))
-                .toList();
-            if (filtered.isEmpty) {
-              return EmptyState(
-                showingRecent && rows.isEmpty
-                    ? 'No dated additions available from the provider.'
-                    : 'No items found',
-              );
-            }
-            return GridView.builder(
-              padding: const EdgeInsets.all(12),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 240,
-                mainAxisExtent: 285,
-                crossAxisSpacing: 8,
-                mainAxisSpacing: 8,
-              ),
-              itemCount: filtered.length,
-              itemBuilder: (_, index) {
-                final item = filtered[index];
-                return FocusCard(
-                  autofocus: index == 0,
-                  onTap: () => openItem(item),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: Artwork(item.artwork),
+          builder: (unsortedRows) {
+            final rows = sortCategories(unsortedRows);
+            return rows.isEmpty
+                ? const EmptyState('No categories available')
+                : ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: rows.length,
+                    itemBuilder: (_, index) {
+                      final category = rows[index];
+                      return FocusCard(
+                        stableSize: widget.type == ContentType.live,
+                        padding: widget.type == ContentType.live
+                            ? const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 2,
+                              )
+                            : const EdgeInsets.all(14),
+                        autofocus:
+                            index == 0 && widget.type == ContentType.live,
+                        selected:
+                            !showingMyList &&
+                            !showingRecent &&
+                            !showingContinue &&
+                            selected?.id == category.id,
+                        onTap: () => select(category),
+                        child: Row(
+                          children: [Expanded(child: Text(category.name))],
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              item.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          MyListButton(provider: widget.provider, item: item),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
+                      );
+                    },
+                  );
           },
         ),
       ),
     ],
   );
 
+  Widget itemList() => showingMyList && widget.type == ContentType.live
+      ? LiveMyListPanel(
+          provider: widget.provider,
+          selectedGroup: liveMyListGroup,
+          onGroupChanged: (id) => setState(() => liveMyListGroup = id),
+          onPlay: openItem,
+        )
+      : Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    selected!.name,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  ActivationTextField(
+                    key: ValueKey(selected!.id),
+                    decoration: const InputDecoration(
+                      hintText: 'Search this category',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 10,
+                      ),
+                      prefixIcon: Icon(Icons.search, size: 18),
+                      prefixIconConstraints: BoxConstraints(
+                        minWidth: 36,
+                        minHeight: 36,
+                      ),
+                    ),
+                    onChanged: (value) =>
+                        setState(() => search = value.toLowerCase()),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: AsyncView(
+                future: items!,
+                retry: () => showingMyList
+                    ? selectMyList()
+                    : showingContinue
+                    ? selectContinue()
+                    : showingRecent
+                    ? selectRecent(refresh: true)
+                    : setState(
+                        () => items = loadCategory(selected!, refresh: true),
+                      ),
+                builder: (rows) {
+                  final filtered = sortTitles(rows)
+                      .where((item) => item.name.toLowerCase().contains(search))
+                      .toList();
+                  if (filtered.isEmpty) {
+                    return EmptyState(
+                      showingRecent && rows.isEmpty
+                          ? 'No dated additions available from the provider.'
+                          : 'No items found',
+                    );
+                  }
+                  return GridView.builder(
+                    padding: const EdgeInsets.all(12),
+                    gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 180,
+                      mainAxisExtent: widget.type == ContentType.live
+                          ? 150
+                          : 235,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                    ),
+                    itemCount: filtered.length,
+                    itemBuilder: (_, index) {
+                      final item = filtered[index];
+                      return FocusCard(
+                        autofocus: index == 0,
+                        onTap: () => openItem(item),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                width: double.infinity,
+                                child: item.type == ContentType.live
+                                    ? ChannelLogo(item.artwork)
+                                    : Artwork(item.artwork),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    item.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+
   Future<void> openItem(ContentItem item) async {
+    if (!await requestTitleAccess(context, widget.provider, item) || !mounted) {
+      return;
+    }
     if (item.type != ContentType.live) {
       await Navigator.of(context).push(
         SmoothPageRoute<void>(
@@ -613,12 +997,22 @@ class _BrowseScreenState extends State<BrowseScreen> {
         SmoothPageRoute<void>(
           builder: (_) => PlayerScreen(
             source: source,
+            provider: widget.provider,
             item: item,
             channelCategory: favourites
-                ? 'My list'
+                ? 'My List - ${LiveFavouriteGroups.forProvider(widget.provider).name(liveMyListGroup)}'
                 : category?.name ?? 'Channels',
             loadChannels: () => favourites
-                ? myList.items(ContentType.live).then(visibleSavedItems)
+                ? () async {
+                    final groups = LiveFavouriteGroups.forProvider(
+                      widget.provider,
+                    );
+                    await groups.load();
+                    final saved = await myList
+                        .items(ContentType.live)
+                        .then(visibleSavedItems);
+                    return groups.channels(liveMyListGroup, saved);
+                  }()
                 : category != null
                 ? loadCategory(category)
                 : widget.provider.getAllItems(ContentType.live),

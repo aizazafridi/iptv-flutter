@@ -109,7 +109,7 @@ class _EpisodePickerState extends State<EpisodePicker> {
                     final episode = widget.episodes[index];
                     final selected = episode.id == widget.currentId;
                     return SizedBox(
-                      height: 205,
+                      height: 160,
                       child: Material(
                         color: Colors.transparent,
                         child: InkWell(

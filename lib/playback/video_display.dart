@@ -5,7 +5,7 @@ class VideoDisplay {
   final double zoom;
   final Offset pan;
   const VideoDisplay({
-    this.ratio = 'Original',
+    this.ratio = 'Fill',
     this.zoom = 1,
     this.pan = Offset.zero,
   });

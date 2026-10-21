@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'compact_player_panel_theme.dart';
 import '../data/recorded_segments.dart';
 
 class RecordingsPanel extends StatelessWidget {
@@ -54,14 +55,14 @@ class RecordingsPanel extends StatelessWidget {
     alignment: Alignment.topRight,
     insetPadding: const EdgeInsets.only(left: 16, top: 12, bottom: 12),
     child: SizedBox(
-      width: 320,
+      width: 280,
       child: Material(
         color: Colors.black.withValues(alpha: 0.65),
         borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(8),
           child: Theme(
-            data: ThemeData.dark(),
+            data: compactPlayerPanelTheme(),
             child: ListenableBuilder(
               listenable: segments,
               builder: (context, _) {
@@ -72,7 +73,7 @@ class RecordingsPanel extends StatelessWidget {
                         const Expanded(
                           child: Text(
                             'Recordings',
-                            style: TextStyle(fontSize: 20),
+                            style: TextStyle(fontSize: 16),
                           ),
                         ),
                         IconButton(

@@ -116,7 +116,10 @@ void main() {
     final image = clip.child! as Image;
     final fallback =
         image.errorBuilder!(context, Exception('unavailable'), null) as Image;
-    expect((fallback.image as NetworkImage).url, poster.toString());
+    expect(
+      ((fallback.image as ResizeImage).imageProvider as NetworkImage).url,
+      poster.toString(),
+    );
     expect(
       fallback.errorBuilder!(context, Exception('unavailable'), null),
       isA<Container>(),
@@ -138,7 +141,10 @@ void main() {
       final loading =
           primary.frameBuilder!(context, const SizedBox(), null, false)
               as Image;
-      expect((loading.image as NetworkImage).url, poster.toString());
+      expect(
+        ((loading.image as ResizeImage).imageProvider as NetworkImage).url,
+        poster.toString(),
+      );
       expect(
         loading.frameBuilder!(context, const SizedBox(), null, false),
         isA<Container>(),

@@ -1,3 +1,4 @@
+import 'recent_catalog_cache.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:math';
 import '../data/credential_store.dart';
@@ -17,6 +18,8 @@ class Session extends ChangeNotifier {
   AccountProfile? activeProfile;
   List<AccountProfile> profiles = [];
   bool loading = true;
+  double? loadingProgress;
+  String loadingMessage = 'Loading';
   String? error;
   ProviderConfig? lastConfig;
   bool _disposed = false;
@@ -94,6 +97,8 @@ class Session extends ChangeNotifier {
       return;
     }
     loading = true;
+    loadingProgress = 0;
+    loadingMessage = 'Loading';
     error = null;
     _notify();
     final id =
@@ -106,6 +111,8 @@ class Session extends ChangeNotifier {
     try {
       candidate = registry.create(configured);
       final result = await candidate.connect();
+      loadingProgress = 0.15;
+      _notify();
       if (_disposed) {
         candidate.dispose();
         return;
@@ -137,6 +144,30 @@ class Session extends ChangeNotifier {
       provider = candidate;
       account = result;
       activeProfile = profile;
+      final types = [
+        ContentType.movies,
+        ContentType.series,
+      ].where(candidate.supportedTypes.contains).toList();
+      var completed = 0;
+      loadingProgress = 0.3;
+      loadingMessage = 'Loading';
+      _notify();
+      await Future.wait(
+        types.map((type) async {
+          try {
+            await RecentCatalogCache.load(candidate!, type);
+          } catch (_) {
+            /* Browsing can retry an unavailable catalogue. */
+          }
+          completed++;
+          loadingProgress = types.isEmpty
+              ? 1
+              : 0.3 + 0.7 * completed / types.length;
+          loadingMessage = 'Loading';
+          _notify();
+        }),
+      );
+      if (_disposed) return;
     } on ProviderException catch (exception) {
       candidate?.dispose();
       error = exception.message;

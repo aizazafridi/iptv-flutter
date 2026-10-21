@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class SubtitleSettings {
@@ -11,15 +10,14 @@ class SubtitleSettings {
     this.scope,
   });
   Future<String> load() async {
-    final saved = await storage.read(key: key);
-    if (saved != null) return saved;
-    // Seed local development settings once; user changes take precedence.
+    // Use the configured default in desktop and release builds alike.
     const configured = String.fromEnvironment('OPENSUBTITLES_API_KEY');
-    if (!kReleaseMode && configured.isNotEmpty) {
-      await save(configured);
-      return configured;
-    }
-    return '';
+    if (configured.isNotEmpty) return configured;
+    final saved = await storage.read(key: key);
+    if (saved != null && saved.isNotEmpty) return saved;
+    return scope == null
+        ? ''
+        : await storage.read(key: 'opensubtitles_api_key') ?? '';
   }
 
   Future<void> save(String value) =>

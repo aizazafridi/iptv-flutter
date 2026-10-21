@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'compact_player_panel_theme.dart';
 import '../domain/models.dart';
 import 'system_clock.dart';
 
@@ -79,17 +80,17 @@ class _EpgPanelState extends State<EpgPanel> with WidgetsBindingObserver {
     return Dialog(
       backgroundColor: Colors.transparent,
       elevation: 0,
-      alignment: Alignment.centerRight,
-      insetPadding: const EdgeInsets.only(left: 16, top: 12, bottom: 12),
+      alignment: Alignment.centerLeft,
+      insetPadding: const EdgeInsets.only(right: 16, top: 12, bottom: 12),
       child: Container(
-        width: 360,
-        padding: const EdgeInsets.all(12),
+        width: 300,
+        padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.65),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Theme(
-          data: ThemeData.dark(),
+          data: compactPlayerPanelTheme(),
           child: Column(
             children: [
               Row(
@@ -97,7 +98,7 @@ class _EpgPanelState extends State<EpgPanel> with WidgetsBindingObserver {
                   const Expanded(
                     child: Text(
                       'Programme guide',
-                      style: TextStyle(fontSize: 20),
+                      style: TextStyle(fontSize: 16),
                     ),
                   ),
                   IconButton(
@@ -143,8 +144,8 @@ class _EpgPanelState extends State<EpgPanel> with WidgetsBindingObserver {
                       final current = p.isCurrent(now);
                       final local = p.start.toLocal();
                       return Container(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        padding: const EdgeInsets.all(12),
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(
                             alpha: current ? 0.18 : 0.05,
@@ -163,7 +164,7 @@ class _EpgPanelState extends State<EpgPanel> with WidgetsBindingObserver {
                             Text(
                               p.title,
                               style: const TextStyle(
-                                fontSize: 16,
+                                fontSize: 13,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),

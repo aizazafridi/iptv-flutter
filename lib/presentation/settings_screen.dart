@@ -1,12 +1,17 @@
+import '../data/video_recordings.dart';
+import '../data/playback_preferences.dart';
 import 'package:flutter/material.dart';
-import 'subtitle_settings_panel.dart';
 import '../application/appearance.dart';
 import '../application/session.dart';
 import '../domain/models.dart';
 import '../application/watch_history.dart';
 import '../application/category_locks.dart';
 import 'lock_password_dialog.dart';
+import 'category_lock_settings_screen.dart';
+import 'title_lock_settings_screen.dart';
+import 'smooth_page_route.dart';
 import 'profile_avatar.dart';
+import 'widgets.dart';
 
 class SettingsScreen extends StatefulWidget {
   final Session session;
@@ -27,6 +32,109 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  String? selectedSection;
+  Widget settingsCategory({
+    required IconData icon,
+    required String title,
+    required List<Widget> children,
+  }) {
+    if (selectedSection != null) {
+      return selectedSection == title
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            )
+          : const SizedBox.shrink();
+    }
+    return FocusCard(
+      autofocus: title == 'Profile settings',
+      padding: const EdgeInsets.all(12),
+      onTap: () => enterSection(title),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ),
+          const Icon(Icons.chevron_right, size: 18),
+        ],
+      ),
+    );
+  }
+
+  bool enteringParental = false;
+  Future<void> enterSection(String title) async {
+    if (title != 'Parental controls') {
+      setState(() => selectedSection = title);
+      return;
+    }
+    if (enteringParental) return;
+    enteringParental = true;
+    try {
+      final provider = widget.session.provider;
+      if (provider == null) return;
+      final locks = CategoryLocks.forProvider(provider);
+      await locks.load();
+      if (!mounted) return;
+      final pin = await showDialog<String>(
+        context: context,
+        builder: (_) =>
+            LockPasswordDialog(locks: locks, setting: !locks.hasPassword),
+      );
+      if (!mounted || pin == null || !locks.check(pin)) return;
+      if (locks.needsPinUpgrade) {
+        final upgraded = await showDialog<String>(
+          context: context,
+          builder: (_) => LockPasswordDialog(
+            locks: locks,
+            setting: true,
+            verifiedCurrent: pin,
+          ),
+        );
+        if (!mounted || upgraded == null || locks.needsPinUpgrade) return;
+      }
+      setState(() => selectedSection = title);
+    } finally {
+      enteringParental = false;
+    }
+  }
+
+  Widget settingsLayout({required List<Widget> children}) => LayoutBuilder(
+    builder: (context, constraints) {
+      final columns = constraints.maxWidth >= 540 ? 2 : 1;
+      final width = (constraints.maxWidth - 24 - 12 * (columns - 1)) / columns;
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(12),
+        child: selectedSection == null
+            ? Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final child in children)
+                    SizedBox(width: width, height: 88, child: child),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: children,
+              ),
+      );
+    },
+  );
+
   bool busy = false;
   bool clearingHistory = false;
   Future<void> clearHistory() async {
@@ -142,172 +250,349 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ? null
         : widget.addAccount,
   );
+  Future<void> openParental(Widget screen) async {
+    final provider = widget.session.provider;
+    if (provider == null) return;
+    final locks = CategoryLocks.forProvider(provider);
+    await locks.load();
+    if (!mounted) return;
+    await Navigator.of(
+      context,
+    ).push(SmoothPageRoute<void>(builder: (_) => screen));
+  }
+
+  Future<void> clearRecordings() async {
+    final provider = widget.session.provider;
+    if (provider == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete all recordings?'),
+        content: const Text(
+          'Permanently delete video recordings for this profile? Other profiles are unaffected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await VideoRecordings.forScope(
+        WatchHistory.forProvider(provider).scope,
+      ).deleteAll();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recordings deleted for this profile.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not delete recordings. Stop recording and try again.',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> changePin() async {
+    final provider = widget.session.provider;
+    if (provider == null) return;
+    final locks = CategoryLocks.forProvider(provider);
+    await locks.load();
+    if (!mounted) return;
+    await showDialog<String>(
+      context: context,
+      builder: (_) => LockPasswordDialog(locks: locks, setting: true),
+    );
+  }
+
+  Future<void> playerDefaults() async {
+    final provider = widget.session.provider;
+    if (provider == null) return;
+    final preferences = PlaybackPreferences(
+      WatchHistory.forProvider(provider).scope,
+    );
+    final saved = await preferences.load();
+    if (!mounted) return;
+    var seek = [30, 60, 120, 180].contains(saved['seek'])
+        ? saved['seek'] as int
+        : 30;
+    var rate = [0.5, 1, 2, 3, 5].contains(saved['rate'])
+        ? (saved['rate'] as num).toDouble()
+        : 1.0;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Playback defaults'),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<int>(
+                  initialValue: seek,
+                  decoration: const InputDecoration(labelText: 'Seek interval'),
+                  items: [30, 60, 120, 180]
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text('$value seconds'),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) update(() => seek = value);
+                  },
+                ),
+                DropdownButtonFormField<double>(
+                  initialValue: rate,
+                  decoration: const InputDecoration(
+                    labelText: 'Playback speed',
+                  ),
+                  items: [0.5, 1.0, 2.0, 3.0, 5.0]
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value == 1 ? 'Normal' : '${value}x'),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) update(() => rate = value);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await preferences.save({...saved, 'seek': seek, 'rate': rate});
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save playback defaults.')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([widget.session, widget.appearance]),
-    builder: (context, _) => Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: widget.session.activeProfile == null
-          ? ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                addAccountTile(),
-                const Text('Choose an account to change its settings.'),
-                accountManagement(),
-                if (widget.session.error != null) Text(widget.session.error!),
-              ],
-            )
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 640),
-                child: ListView(
-                  padding: const EdgeInsets.all(24),
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.edit_outlined),
-                      title: const Text('Edit current account'),
-                      subtitle: Text(widget.session.activeProfile!.name),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: widget.session.loading || busy
-                          ? null
-                          : widget.editAccount,
-                    ),
-                    addAccountTile(),
-                    ListTile(
-                      leading: const Icon(Icons.switch_account_outlined),
-                      title: const Text('Switch account'),
-                      subtitle: Text(
-                        widget.session.account == null
-                            ? 'Enter a different IPTV account'
-                            : 'Signed in as ${widget.session.account!.username}',
-                      ),
-                      trailing: busy
-                          ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.chevron_right),
-                      onTap: busy || widget.session.loading
-                          ? null
-                          : () async {
-                              setState(() => busy = true);
-                              await widget.switchUser();
-                              if (!context.mounted) return;
-                              if (widget.session.account == null) {
-                                Navigator.of(context).pop();
-                              } else {
-                                setState(() => busy = false);
-                              }
-                            },
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.history),
-                      title: const Text('Clear watch history'),
-                      subtitle: const Text(
-                        'Choose Movies, Series, or all history. Resume positions and recordings are kept.',
-                      ),
-                      onTap: clearingHistory || widget.session.provider == null
-                          ? null
-                          : clearHistory,
-                      trailing: clearingHistory
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : null,
-                    ),
-                    if (widget.session.error != null)
-                      Text(widget.session.error!),
-                    const Divider(height: 40),
-                    Text(
-                      'App background color',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Choose a color. Your preference is saved for next time.',
-                    ),
-                    const SizedBox(height: 20),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
+    builder: (context, _) => Theme(
+      data: Theme.of(context).copyWith(
+        visualDensity: VisualDensity.compact,
+        listTileTheme: const ListTileThemeData(
+          dense: true,
+          minVerticalPadding: 4,
+        ),
+      ),
+      child: PopScope(
+        canPop: selectedSection == null,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && selectedSection != null) {
+            setState(() => selectedSection = null);
+          }
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            toolbarHeight: 48,
+            title: Text(
+              selectedSection ?? 'Settings',
+              style: const TextStyle(fontSize: 18),
+            ),
+            leading: selectedSection == null
+                ? null
+                : BackButton(
+                    onPressed: () => setState(() => selectedSection = null),
+                  ),
+          ),
+          body: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: settingsLayout(
+                children: [
+                  settingsCategory(
+                    icon: Icons.person_outline,
+                    title: 'Profile settings',
+                    children: [
+                      if (widget.session.activeProfile != null)
+                        ListTile(
+                          title: const Text('Edit current account'),
+                          subtitle: Text(widget.session.activeProfile!.name),
+                          leading: const Icon(Icons.edit_outlined),
+                          onTap: widget.editAccount,
+                        ),
+                      addAccountTile(),
+                      if (widget.session.activeProfile != null)
+                        ListTile(
+                          leading: const Icon(Icons.switch_account_outlined),
+                          title: const Text('Switch account'),
+                          onTap: () async {
+                            await widget.switchUser();
+                            if (context.mounted) Navigator.pop(context);
+                          },
+                        ),
+                      accountManagement(),
+                    ],
+                  ),
+                  if (widget.session.activeProfile != null) ...[
+                    settingsCategory(
+                      icon: Icons.video_settings,
+                      title: 'Player settings',
                       children: [
-                        for (final entry in AppAppearance.backgrounds.entries)
-                          ChoiceChip(
-                            avatar: Container(
-                              width: 22,
-                              height: 22,
-                              decoration: BoxDecoration(
-                                color: entry.value,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.grey),
-                              ),
-                            ),
-                            label: Text(entry.key),
-                            selected: widget.appearance.selected == entry.key,
-                            onSelected: (_) =>
-                                widget.appearance.choose(entry.key),
+                        ListTile(
+                          onTap: playerDefaults,
+                          title: const Text('Playback defaults'),
+                          subtitle: const Text(
+                            'Seek interval and playback speed',
+                          ),
+                        ),
+                      ],
+                    ),
+                    settingsCategory(
+                      icon: Icons.palette_outlined,
+                      title: 'Appearance and browsing',
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              for (final entry
+                                  in AppAppearance.backgrounds.entries)
+                                ChoiceChip(
+                                  label: Text(entry.key),
+                                  selected:
+                                      widget.appearance.selected == entry.key,
+                                  onSelected: (_) =>
+                                      widget.appearance.choose(entry.key),
+                                ),
+                            ],
+                          ),
+                        ),
+                        for (final type in ContentType.values)
+                          SwitchListTile(
+                            dense: true,
+                            title: Text('${type.label} cards'),
+                            value: widget.appearance.usesCards(type),
+                            onChanged: (value) =>
+                                widget.appearance.setCards(type, value),
                           ),
                       ],
                     ),
-                    const Divider(height: 40),
-                    Text(
-                      'Browsing layout',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Enable cards to browse horizontal rows for each category.',
-                    ),
-                    for (final type in ContentType.values)
-                      SwitchListTile(
-                        title: Text('${type.label} cards'),
-                        subtitle: const Text('Horizontal category rows'),
-                        value: widget.appearance.usesCards(type),
-                        onChanged: (enabled) =>
-                            widget.appearance.setCards(type, enabled),
-                      ),
-                    const Divider(height: 40),
-                    SubtitleSettingsPanel(
-                      scope: widget.session.activeProfile?.id,
-                    ),
-                    const Divider(height: 24),
-                    ListTile(
-                      leading: const Icon(Icons.lock_outline),
-                      title: const Text('Category lock password'),
-                      subtitle: const Text(
-                        'Set or change the password for this account',
-                      ),
-                      onTap: widget.session.provider == null
-                          ? null
-                          : () async {
-                              final locks = CategoryLocks.forProvider(
-                                widget.session.provider!,
-                              );
-                              await locks.load();
-                              if (!context.mounted) return;
-                              await showDialog<void>(
-                                context: context,
-                                builder: (_) => LockPasswordDialog(
-                                  locks: locks,
-                                  setting: true,
+                    settingsCategory(
+                      icon: Icons.shield_outlined,
+                      title: 'Parental controls',
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.lock_outline),
+                          title: const Text('Set or change parental PIN'),
+                          onTap: changePin,
+                        ),
+                        ExpansionTile(
+                          leading: const Icon(Icons.lock_outline),
+                          title: const Text(
+                            'PIN protection and hidden categories',
+                          ),
+                          children: [
+                            for (final type in [
+                              ContentType.live,
+                              ContentType.series,
+                              ContentType.movies,
+                            ])
+                              ExpansionTile(
+                                title: Text(type.label),
+                                childrenPadding: const EdgeInsets.only(
+                                  left: 16,
                                 ),
-                              );
-                            },
+                                children: [
+                                  ListTile(
+                                    dense: true,
+                                    title: const Text(
+                                      'Category PIN protection',
+                                    ),
+                                    trailing: const Icon(Icons.chevron_right),
+                                    onTap: () => openParental(
+                                      CategoryLockSettingsScreen(
+                                        provider: widget.session.provider!,
+                                        type: type,
+                                      ),
+                                    ),
+                                  ),
+                                  ListTile(
+                                    dense: true,
+                                    title: const Text('Title PIN protection'),
+                                    trailing: const Icon(Icons.chevron_right),
+                                    onTap: () => openParental(
+                                      TitleLockSettingsScreen(
+                                        provider: widget.session.provider!,
+                                        type: type,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                      ],
                     ),
-                    const Divider(height: 24),
-                    accountManagement(),
-                    if (widget.appearance.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16),
-                        child: Text(widget.appearance.error!),
-                      ),
+                    settingsCategory(
+                      icon: Icons.storage_outlined,
+                      title: 'Storage and history',
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.history),
+                          title: const Text('Clear watch history'),
+                          subtitle: const Text(
+                            'Resume positions and recordings are preserved.',
+                          ),
+                          onTap: clearingHistory ? null : clearHistory,
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.delete_outline),
+                          title: const Text('Delete all recordings'),
+                          subtitle: const Text('For this profile only'),
+                          onTap: clearRecordings,
+                        ),
+                      ],
+                    ),
                   ],
-                ),
+                  if (widget.session.error != null) Text(widget.session.error!),
+                  if (widget.appearance.error != null)
+                    Text(widget.appearance.error!),
+                ],
               ),
             ),
+          ),
+        ),
+      ),
     ),
   );
 }

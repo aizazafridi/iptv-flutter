@@ -1,3 +1,5 @@
+import 'ffmpeg_video_capture.dart';
+import 'video_recording_engine.dart';
 import 'package:flutter/material.dart';
 import 'subtitle_customization.dart';
 import 'video_display.dart';
@@ -10,13 +12,42 @@ import 'frame_preview.dart';
 class MediaKitEngine
     implements
         PlaybackEngine,
+        CompletionPlaybackEngine,
+        VideoRecordingEngine,
+        BufferingPlaybackEngine,
         FramePreviewEngine,
         SubtitleCustomizationEngine,
         VideoDisplayEngine {
-  final Player _player = Player(
-    configuration: const PlayerConfiguration(logLevel: MPVLogLevel.error),
+  @override
+  Stream<bool> get completed => _player.stream.completed;
+  @override
+  Stream<bool> get buffering => _player.stream.buffering;
+  @override
+  Stream<double> get bufferingPercentage => _player.stream.bufferingPercentage;
+  final _capture = FfmpegVideoCapture();
+  PlaybackSource? _source;
+  @override
+  Future<void> startVideoRecording(String path) async {
+    final source = _source;
+    if (source == null) {
+      throw StateError('Open a stream before recording.');
+    }
+    await _capture.start(source, _player.state.position, path);
+  }
+
+  @override
+  Future<void> stopVideoRecording() => _capture.stop();
+
+  final Player _player;
+  MediaKitEngine({MPVLogLevel logLevel = MPVLogLevel.error})
+    : _player = Player(configuration: PlayerConfiguration(logLevel: logLevel));
+  Stream<PlayerLog> get diagnosticLogs => _player.stream.log;
+  late final VideoController _controller = VideoController(
+    _player,
+    configuration: const VideoControllerConfiguration(
+      enableHardwareAcceleration: true,
+    ),
   );
-  late final VideoController _controller = VideoController(_player);
   final _display = ValueNotifier(const VideoDisplay());
   @override
   VideoDisplay get videoDisplay => _display.value;
@@ -132,8 +163,14 @@ class MediaKitEngine
   Future<void> addSubtitle(Uri uri) =>
       _player.setSubtitleTrack(SubtitleTrack.uri(uri.toString()));
   @override
-  Future<void> open(PlaybackSource source) =>
-      _player.open(Media(source.uri.toString(), httpHeaders: source.headers));
+  Future<void> open(PlaybackSource source) async {
+    await _capture.stop();
+    _source = source;
+    await _player.open(
+      Media(source.uri.toString(), httpHeaders: source.headers),
+    );
+  }
+
   @override
   Future<void> togglePause() => _player.playOrPause();
   @override
@@ -145,6 +182,7 @@ class MediaKitEngine
   @override
   Future<void> dispose() async {
     _disposed = true;
+    await _capture.stop();
     await _preview?.dispose();
     await _player.dispose();
     _subtitleStyle.dispose();

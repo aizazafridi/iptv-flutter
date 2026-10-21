@@ -75,6 +75,38 @@ void main() {
     },
   );
 
+  testWidgets('channel picker restores the current channel in a long list', (
+    tester,
+  ) async {
+    final rows = List.generate(
+      100,
+      (index) => ContentItem(
+        id: '$index',
+        name: 'Channel $index',
+        type: ContentType.live,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChannelPicker(
+            title: 'Channels',
+            currentId: '80',
+            load: () async => rows,
+            onSelect: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final tile = tester.widget<ListTile>(
+      find.widgetWithText(ListTile, 'Channel 80'),
+    );
+    expect(tile.selected, isTrue);
+    expect(tile.focusNode!.hasPrimaryFocus, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'live controls hide subtitles and channel picker switches playback and EPG',
     (tester) async {
@@ -121,12 +153,19 @@ void main() {
       expect(find.byType(ChannelPicker), findsOneWidget);
       final dialog = tester.widget<Dialog>(find.byType(Dialog));
       expect(dialog.backgroundColor, Colors.transparent);
-      expect(dialog.alignment, Alignment.centerRight);
+      expect(dialog.alignment, Alignment.centerLeft);
       expect(find.text('English'), findsOneWidget);
       await tester.tap(find.text('Second channel'));
       await tester.pumpAndSettle();
       expect(engine.opened, ['First channel', 'Second channel']);
-      expect(find.text('Second channel'), findsOneWidget);
+      expect(find.byType(ChannelPicker), findsOneWidget);
+      final selectedTile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Second channel'),
+      );
+      expect(selectedTile.selected, isTrue);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(ChannelPicker), findsNothing);
       await tester.tap(find.byTooltip('Programme guide'));
       await tester.pumpAndSettle();
       expect(epgId, '2');
@@ -154,6 +193,7 @@ void main() {
         matching: find.byType(FocusCard),
       );
       expect(tester.getSize(saved).width, tester.getSize(category).width);
+      expect(tester.getSize(saved).height, tester.getSize(category).height);
       expect(tester.getSize(saved).width, greaterThan(260));
       expect(tester.getSize(category).height, lessThan(72));
       expect(tester.getSize(saved).height, lessThan(72));

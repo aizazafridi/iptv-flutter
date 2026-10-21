@@ -58,10 +58,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(widget.item.name),
-      actions: [MyListButton(provider: widget.provider, item: widget.item)],
-    ),
+    appBar: AppBar(title: Text(widget.item.name)),
     body: AsyncView(
       future: details,
       retry: () => setState(() => details = load()),
@@ -81,7 +78,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
           children: [
             Text(
               info.item.name,
-              style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -100,7 +97,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
             const SizedBox(height: 16),
             Text(
               info.synopsis.isEmpty ? 'No synopsis available.' : info.synopsis,
-              style: const TextStyle(height: 1.6),
+              style: const TextStyle(height: 1.35, fontSize: 13),
             ),
             if (info.director.isNotEmpty)
               Padding(
@@ -115,9 +112,18 @@ class _DetailsScreenState extends State<DetailsScreen> {
             const SizedBox(height: 24),
             if (series && seasons.isNotEmpty) ...[
               DropdownButtonFormField<int>(
+                itemHeight: 48,
+                style: Theme.of(context).textTheme.bodySmall,
                 key: ValueKey(activeSeason),
                 initialValue: activeSeason,
-                decoration: const InputDecoration(labelText: 'Season'),
+                decoration: const InputDecoration(
+                  labelText: 'Season',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
                 items: seasons
                     .map(
                       (s) =>
@@ -136,10 +142,19 @@ class _DetailsScreenState extends State<DetailsScreen> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<Episode>(
+                itemHeight: 48,
+                style: Theme.of(context).textTheme.bodySmall,
                 key: ValueKey('episode-${selected?.id}'),
                 initialValue: selected,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Episode'),
+                decoration: const InputDecoration(
+                  labelText: 'Episode',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
                 items: visibleEpisodes
                     .map(
                       (e) => DropdownMenuItem(
@@ -160,24 +175,71 @@ class _DetailsScreenState extends State<DetailsScreen> {
             ],
             if (series && episodes.isEmpty)
               const Text('No episodes available.'),
-            FilledButton.icon(
-              onPressed: resolving || (series && selected == null)
-                  ? null
-                  : () => play(
-                      info.item,
-                      selected,
-                      episodes,
-                      artwork: info.artwork,
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      style: myListControlStyle(compact: series),
+                      autofocus: true,
+                      tooltip:
+                          previous != null &&
+                              (!series || selected?.id == previous?.episode?.id)
+                          ? 'Resume'
+                          : 'Play',
+                      onPressed: resolving || (series && selected == null)
+                          ? null
+                          : () => play(
+                              info.item,
+                              selected,
+                              episodes,
+                              artwork: info.artwork,
+                            ),
+                      icon: const Icon(Icons.play_arrow_rounded),
                     ),
-              icon: const Icon(Icons.play_arrow),
-              label: Text(
-                resolving
-                    ? 'Preparing…'
-                    : previous != null &&
-                          (!series || selected?.id == previous?.episode?.id)
-                    ? 'Resume'
-                    : 'Play',
-              ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: resolving || (series && selected == null)
+                          ? null
+                          : () => play(
+                              info.item,
+                              selected,
+                              episodes,
+                              artwork: info.artwork,
+                            ),
+                      child: Text(
+                        resolving
+                            ? 'Preparing?'
+                            : previous != null &&
+                                  (!series ||
+                                      selected?.id == previous?.episode?.id)
+                            ? 'Resume'
+                            : 'Play',
+                        style: series ? const TextStyle(fontSize: 13) : null,
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    MyListButton(
+                      provider: widget.provider,
+                      item: widget.item,
+                      compact: series,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'My List',
+                      style: series ? const TextStyle(fontSize: 13) : null,
+                    ),
+                  ],
+                ),
+              ],
             ),
           ],
         );
@@ -189,7 +251,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Center(
-                        child: Artwork(info.artwork, width: 200, height: 290),
+                        child: Artwork(info.artwork, width: 160, height: 230),
                       ),
                       const SizedBox(height: 24),
                       metadata,
@@ -198,7 +260,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
                 : Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Artwork(info.artwork, width: 250, height: 365),
+                      Artwork(info.artwork, width: 190, height: 275),
                       const SizedBox(width: 32),
                       Expanded(child: metadata),
                     ],

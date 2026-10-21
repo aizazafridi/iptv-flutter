@@ -131,7 +131,7 @@ void main() {
         scope: first.id,
       ).saveAppearance(const SubtitleAppearance(size: 32, color: 'Yellow'));
       await PlaybackPreferences(first.id).save({'seek': 120, 'rate': 2});
-      await CategoryLocks.forProvider(session.provider!).setPassword('1234');
+      await CategoryLocks.forProvider(session.provider!).setPassword('123456');
       const favourite = ContentItem(
         id: '42',
         name: 'Saved movie',
@@ -175,7 +175,7 @@ void main() {
       expect(appearance.usesCards(ContentType.movies), isTrue);
       expect(await SubtitleSettings(scope: first.id).load(), 'first-key');
       expect(
-        CategoryLocks.forProvider(session.provider!).check('1234'),
+        CategoryLocks.forProvider(session.provider!).check('123456'),
         isTrue,
       );
       session.dispose();
@@ -188,7 +188,7 @@ void main() {
       for (final type in ContentType.values) {
         final locks = CategoryLocks(type.name);
         final guarded = LockedProvider(CatalogFixture(), locks);
-        await locks.setPassword('1234');
+        await locks.setPassword('123456');
         final category = Category('7', 'Locked', type);
         await locks.setLocked(category, true);
         final item = ContentItem(
@@ -224,16 +224,16 @@ void main() {
           );
         }
         expect(locks.unlock(category, 'wrong'), isFalse);
-        expect(locks.unlock(category, '1234'), isTrue);
+        expect(locks.unlock(category, '123456'), isTrue);
         expect((await guarded.getAllItems(type)).length, 2);
         final restored = CategoryLocks(type.name);
         await restored.load();
         expect(restored.isLocked(category), isTrue);
         await expectLater(
-          restored.setPassword('5678', current: 'wrong'),
+          restored.setPassword('567890', current: 'wrong'),
           throwsA(isA<ProviderException>()),
         );
-        await restored.setLocked(category, false, password: '1234');
+        await restored.setLocked(category, false, password: '123456');
         expect(restored.configured(category), isFalse);
         guarded.dispose();
       }
@@ -271,7 +271,7 @@ void main() {
     'locked category prompts for its password and rejects an incorrect password',
     (tester) async {
       final locks = CategoryLocks('lock-ui');
-      await locks.setPassword('1234');
+      await locks.setPassword('123456');
       await locks.setLocked(
         const Category('7', 'English (4K)', ContentType.movies),
         true,
@@ -290,7 +290,7 @@ void main() {
       await tester.tap(find.text('Unlock'));
       await tester.pumpAndSettle();
       expect(find.text('Incorrect lock password.'), findsOneWidget);
-      await tester.enterText(find.byType(TextField), '1234');
+      await tester.enterText(find.byType(TextField), '123456');
       await tester.tap(find.text('Unlock'));
       await tester.pumpAndSettle();
       expect(find.text('Locked title'), findsOneWidget);

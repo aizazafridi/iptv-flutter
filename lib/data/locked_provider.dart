@@ -19,17 +19,24 @@ class LockedProvider implements IptvProvider, EpgProvider {
   }
 
   @override
-  Future<List<Category>> getCategories(ContentType type) =>
-      delegate.getCategories(type);
+  Future<List<Category>> getCategories(ContentType type) async {
+    await locks.load();
+    return (await delegate.getCategories(
+      type,
+    )).where((category) => !locks.hidden(category)).toList();
+  }
+
   @override
   Future<List<ContentItem>> getItems(Category category) async {
     await locks.load();
-    if (locks.isLocked(category)) {
+    if (locks.isLocked(category) || locks.hidden(category)) {
       throw const ProviderException(
         'This category is locked. Enter its password to access it.',
       );
     }
-    return delegate.getItems(category);
+    return (await delegate.getItems(
+      category,
+    )).where((item) => !locks.titleHidden(item)).toList();
   }
 
   @override
@@ -40,7 +47,8 @@ class LockedProvider implements IptvProvider, EpgProvider {
     final resolved = <ContentItem>[];
     for (final item in items) {
       var categoryId = item.categoryId;
-      if (categoryId == null && locks.hasLocks(item.type)) {
+      if (categoryId == null &&
+          (locks.hasLocks(item.type) || locks.hasHidden(item.type))) {
         try {
           final catalog = await _catalogs.putIfAbsent(
             item.type,
@@ -72,7 +80,17 @@ class LockedProvider implements IptvProvider, EpgProvider {
 
   Future<void> _checkItem(ContentItem item) async {
     await locks.load();
-    if (!locks.hasLocks(item.type)) return;
+    if (locks.titleHidden(item)) {
+      throw const ProviderException('This title is hidden.');
+    }
+    if (locks.titleLocked(item)) {
+      throw const ProviderException('This title is PIN protected.');
+    }
+    if (item.categoryId != null &&
+        locks.hidden(Category(item.categoryId!, '', item.type))) {
+      throw const ProviderException('This category is hidden.');
+    }
+    if (!locks.hasLocks(item.type) && !locks.hasHidden(item.type)) return;
     var categoryId = item.categoryId;
     if (categoryId == null) {
       final catalog = await delegate.getAllItems(item.type);
@@ -82,7 +100,8 @@ class LockedProvider implements IptvProvider, EpgProvider {
           ?.categoryId;
     }
     if (categoryId == null ||
-        locks.isLocked(Category(categoryId, '', item.type))) {
+        locks.isLocked(Category(categoryId, '', item.type)) ||
+        locks.hidden(Category(categoryId, '', item.type))) {
       throw const ProviderException(
         'This title belongs to a locked category. Unlock the category first.',
       );

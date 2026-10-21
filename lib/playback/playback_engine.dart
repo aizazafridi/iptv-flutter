@@ -18,3 +18,14 @@ abstract interface class PlaybackEngine {
   Future<void> dispose();
   Widget surface();
 }
+
+/// Optional playback-buffer progress; independent of the complete file size.
+abstract interface class BufferingPlaybackEngine {
+  Stream<bool> get buffering;
+  Stream<double> get bufferingPercentage;
+}
+
+/// End-of-media notification, separate from pausing or buffering.
+abstract interface class CompletionPlaybackEngine {
+  Stream<bool> get completed;
+}

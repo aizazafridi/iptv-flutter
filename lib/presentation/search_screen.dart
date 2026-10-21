@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
+import 'activation_text_field.dart';
 import 'smooth_page_route.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'details_screen.dart';
 import 'widgets.dart';
-import 'my_list_button.dart';
 
 /// Search uses the provider contract; the screen never knows API action names.
 class CatalogSearchScreen extends StatefulWidget {
   final IptvProvider provider;
   final ContentType type;
+  final Future<void> Function(ContentItem)? onOpen;
   const CatalogSearchScreen({
     super.key,
     required this.provider,
     required this.type,
+    this.onOpen,
   });
   @override
   State<CatalogSearchScreen> createState() => _CatalogSearchScreenState();
@@ -45,7 +47,7 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: TextField(
+          child: ActivationTextField(
             controller: controller,
             autofocus: true,
             decoration: InputDecoration(
@@ -101,30 +103,44 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
                     ),
                   ),
                   Expanded(
-                    child: ListView.builder(
+                    child: GridView.builder(
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 180,
+                            mainAxisExtent: 235,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       itemCount: results.length,
                       itemBuilder: (context, rowIndex) {
                         final item = results[rowIndex];
                         return FocusCard(
-                          onTap: () => Navigator.of(context).push(
-                            SmoothPageRoute<void>(
-                              builder: (_) => DetailsScreen(
-                                provider: widget.provider,
-                                item: item,
-                              ),
-                            ),
-                          ),
-                          child: Row(
+                          onTap: () => widget.onOpen != null
+                              ? widget.onOpen!(item)
+                              : Navigator.of(context).push(
+                                  SmoothPageRoute<void>(
+                                    builder: (_) => DetailsScreen(
+                                      provider: widget.provider,
+                                      item: item,
+                                    ),
+                                  ),
+                                ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Artwork(item.artwork, width: 52, height: 76),
-                              const SizedBox(width: 16),
-                              Expanded(child: Text(item.name)),
-                              MyListButton(
-                                provider: widget.provider,
-                                item: item,
+                              Expanded(
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  child: Artwork(item.artwork),
+                                ),
                               ),
-                              const Icon(Icons.chevron_right),
+                              const SizedBox(height: 12),
+                              Text(
+                                item.name,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ],
                           ),
                         );

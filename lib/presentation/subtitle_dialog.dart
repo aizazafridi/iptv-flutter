@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'activation_text_field.dart';
 import '../data/subtitle_settings.dart';
 import '../playback/subtitle_customization.dart';
 import '../data/subtitle_service.dart';
@@ -135,7 +136,7 @@ class _OnlineSubtitleDialogState extends State<OnlineSubtitleDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            ActivationTextField(
               controller: titleController,
               enabled: !busy,
               decoration: const InputDecoration(

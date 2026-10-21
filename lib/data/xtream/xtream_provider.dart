@@ -118,25 +118,33 @@ class XtreamProvider implements IptvProvider, EpgProvider {
         params: {'category_id': ?categoryId},
       ),
     );
-    return rows.map((raw) {
-      final row = _map(raw);
-      return ContentItem(
-        id: _required(
-          row,
-          type == ContentType.series ? 'series_id' : 'stream_id',
-        ),
-        name: _required(row, 'name'),
-        type: type,
-        artwork: _image(row['stream_icon'] ?? row['cover']),
-        extension: row['container_extension']?.toString(),
-        categoryId: row['category_id']?.toString() ?? categoryId,
-        addedAt:
-            _timestamp(row['added']) ??
-            (type == ContentType.series
-                ? _timestamp(row['last_modified'])
-                : null),
-      );
-    }).toList();
+    final idField = type == ContentType.series ? 'series_id' : 'stream_id';
+    // Providers sometimes include blank separator entries. Keep valid channels
+    // available even when one catalogue entry has no usable identifier.
+    return rows
+        .whereType<Map<String, dynamic>>()
+        .where((row) => _text(row[idField]).trim().isNotEmpty)
+        .map((row) {
+          return ContentItem(
+            id: _required(
+              row,
+              type == ContentType.series ? 'series_id' : 'stream_id',
+            ),
+            name: _text(row['name']).trim().isEmpty
+                ? '${type.label} ${row[idField]}'
+                : _text(row['name']),
+            type: type,
+            artwork: _image(row['stream_icon'] ?? row['cover']),
+            extension: row['container_extension']?.toString(),
+            categoryId: row['category_id']?.toString() ?? categoryId,
+            addedAt:
+                _timestamp(row['added']) ??
+                (type == ContentType.series
+                    ? _timestamp(row['last_modified'])
+                    : null),
+          );
+        })
+        .toList();
   }
 
   MediaDetails _details(ContentItem item, Map<String, dynamic> info) {

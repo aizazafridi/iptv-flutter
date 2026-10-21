@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../application/category_locks.dart';
 import '../domain/models.dart';
 
 class LockPasswordDialog extends StatefulWidget {
   final CategoryLocks locks;
   final bool setting;
+  final String? verifiedCurrent;
   const LockPasswordDialog({
     super.key,
     required this.locks,
     this.setting = false,
+    this.verifiedCurrent,
   });
   @override
   State<LockPasswordDialog> createState() => _LockPasswordDialogState();
@@ -32,7 +35,10 @@ class _LockPasswordDialogState extends State<LockPasswordDialog> {
     });
     try {
       if (widget.setting) {
-        await widget.locks.setPassword(password.text, current: current.text);
+        await widget.locks.setPassword(
+          password.text,
+          current: widget.verifiedCurrent ?? current.text,
+        );
       } else if (!widget.locks.check(password.text)) {
         throw const ProviderException('Incorrect lock password.');
       }
@@ -51,27 +57,45 @@ class _LockPasswordDialogState extends State<LockPasswordDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.setting ? 'Category lock password' : 'Unlock category'),
+    title: Text(widget.setting ? 'Parental PIN' : 'Enter parental PIN'),
     content: SizedBox(
       width: 280,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (widget.setting && widget.locks.hasPassword)
+          if (widget.setting &&
+              widget.locks.hasPassword &&
+              widget.verifiedCurrent == null)
             TextField(
               controller: current,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'Current password'),
+              keyboardType: widget.locks.needsPinUpgrade
+                  ? TextInputType.text
+                  : TextInputType.number,
+              inputFormatters: widget.locks.needsPinUpgrade
+                  ? null
+                  : [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(6),
+                    ],
+              decoration: const InputDecoration(labelText: 'Current PIN'),
             ),
           TextField(
             controller: password,
             obscureText: true,
             autofocus: true,
             enabled: !busy,
+            keyboardType: widget.setting || !widget.locks.needsPinUpgrade
+                ? TextInputType.number
+                : TextInputType.text,
+            inputFormatters: widget.setting || !widget.locks.needsPinUpgrade
+                ? [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(6),
+                  ]
+                : null,
             decoration: InputDecoration(
-              labelText: widget.setting
-                  ? 'New password (at least 4 characters)'
-                  : 'Lock password',
+              labelText: widget.setting ? 'New PIN (6 digits)' : 'Parental PIN',
             ),
             onSubmitted: (_) => submit(),
           ),
