@@ -1,3 +1,4 @@
+import 'category_sidebar_item.dart';
 import 'recordings_library_screen.dart';
 import 'live_my_list_panel.dart';
 import '../application/live_favourite_groups.dart';
@@ -143,21 +144,45 @@ class _BrowseScreenState extends State<BrowseScreen> {
     });
   }
 
-  void openRecordings() => Navigator.of(context).push(
-    SmoothPageRoute<void>(
-      builder: (_) =>
-          RecordingsLibraryScreen(provider: widget.provider, type: widget.type),
-    ),
-  );
-  Widget recordingsCategory() => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-    child: ListTile(
-      dense: true,
-      leading: const Icon(Icons.video_library_outlined),
-      title: const Text('Recordings'),
-      onTap: openRecordings,
-    ),
-  );
+  Future<void> openRecordings() async {
+    await locks.load();
+    if (!mounted) return;
+    final category = CategoryLocks.recordingsCategory(widget.type);
+    if (locks.hidden(category)) return;
+    if (locks.isLocked(category)) {
+      final pin = await showDialog<String>(
+        context: context,
+        builder: (_) => LockPasswordDialog(locks: locks),
+      );
+      if (!mounted || pin == null || !locks.unlock(category, pin)) return;
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      SmoothPageRoute<void>(
+        builder: (_) => RecordingsLibraryScreen(
+          provider: widget.provider,
+          type: widget.type,
+        ),
+      ),
+    );
+  }
+
+  Widget recordingsCategory() =>
+      locks.hidden(CategoryLocks.recordingsCategory(widget.type))
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.video_library_outlined),
+            title: const Text('Recordings'),
+            trailing:
+                locks.isLocked(CategoryLocks.recordingsCategory(widget.type))
+                ? const Icon(Icons.lock_outline, size: 18)
+                : null,
+            onTap: openRecordings,
+          ),
+        );
   Widget sortControl({required bool categories}) => PopupMenuButton<String>(
     tooltip: categories ? 'Sort categories' : 'Sort titles',
     icon: Icon(categories ? Icons.sort_by_alpha : Icons.sort),
@@ -614,10 +639,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             }
             return Row(
               children: [
-                SizedBox(
-                  width: widget.type == ContentType.live ? 320 : 260,
-                  child: categoryList(),
-                ),
+                SizedBox(width: 320, child: categoryList()),
                 const VerticalDivider(width: 1),
                 Expanded(
                   child: selected == null
@@ -760,90 +782,56 @@ class _BrowseScreenState extends State<BrowseScreen> {
     );
   }
 
-  Widget categoryList() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      recordingsCategory(),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-        child: FocusCard(
-          stableSize: widget.type == ContentType.live,
-          padding: widget.type == ContentType.live
-              ? const EdgeInsets.symmetric(horizontal: 14, vertical: 2)
-              : const EdgeInsets.all(14),
-          selected: showingMyList && selected != null,
-          onTap: selectMyList,
-          child: widget.type == ContentType.live
-              ? const Row(children: [Expanded(child: Text('My list'))])
-              : const Text('My list'),
-        ),
-      ),
-      if (widget.type != ContentType.live)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          child: FocusCard(
-            selected: showingContinue && selected != null,
-            onTap: selectContinue,
-            child: const Text('Continue watching'),
-          ),
-        ),
-      if (widget.type != ContentType.live)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          child: FocusCard(
-            autofocus: true,
-            selected: showingRecent && selected != null,
-            onTap: selectRecent,
-            child: const Row(
-              children: [
-                Icon(Icons.new_releases_outlined),
-                SizedBox(width: 8),
-                Expanded(child: Text('Recently added')),
-              ],
+  Widget categoryList() => AsyncView(
+    future: categories,
+    retry: () => setState(() {
+      categories = widget.provider.getCategories(widget.type);
+    }),
+    builder: (unsortedRows) {
+      final rows = sortCategories(unsortedRows);
+      final recordings = CategoryLocks.recordingsCategory(widget.type);
+      return ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          if (!locks.hidden(recordings))
+            CategorySidebarItem(
+              label: 'Recordings',
+              locked: locks.isLocked(recordings),
+              onTap: openRecordings,
             ),
+          CategorySidebarItem(
+            label: 'My list',
+            selected: showingMyList && selected != null,
+            onTap: selectMyList,
           ),
-        ),
-      Expanded(
-        child: AsyncView(
-          future: categories,
-          retry: () => setState(() {
-            categories = widget.provider.getCategories(widget.type);
-          }),
-          builder: (unsortedRows) {
-            final rows = sortCategories(unsortedRows);
-            return rows.isEmpty
-                ? const EmptyState('No categories available')
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: rows.length,
-                    itemBuilder: (_, index) {
-                      final category = rows[index];
-                      return FocusCard(
-                        stableSize: widget.type == ContentType.live,
-                        padding: widget.type == ContentType.live
-                            ? const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 2,
-                              )
-                            : const EdgeInsets.all(14),
-                        autofocus:
-                            index == 0 && widget.type == ContentType.live,
-                        selected:
-                            !showingMyList &&
-                            !showingRecent &&
-                            !showingContinue &&
-                            selected?.id == category.id,
-                        onTap: () => select(category),
-                        child: Row(
-                          children: [Expanded(child: Text(category.name))],
-                        ),
-                      );
-                    },
-                  );
-          },
-        ),
-      ),
-    ],
+          if (widget.type != ContentType.live) ...[
+            CategorySidebarItem(
+              label: 'Continue watching',
+              selected: showingContinue && selected != null,
+              onTap: selectContinue,
+            ),
+            CategorySidebarItem(
+              label: 'Recently added',
+              selected: showingRecent && selected != null,
+              onTap: selectRecent,
+            ),
+          ],
+          for (var index = 0; index < rows.length; index++)
+            CategorySidebarItem(
+              key: ValueKey('sidebar:${rows[index].id}'),
+              label: rows[index].name,
+              locked: locks.isLocked(rows[index]),
+              selected:
+                  !showingMyList &&
+                  !showingRecent &&
+                  !showingContinue &&
+                  selected?.id == rows[index].id,
+              onTap: () => select(rows[index]),
+            ),
+          if (rows.isEmpty) const EmptyState('No categories available'),
+        ],
+      );
+    },
   );
 
   Widget itemList() => showingMyList && widget.type == ContentType.live

@@ -190,7 +190,7 @@ class WatchHistory extends ChangeNotifier {
     await _load();
     // Buffering, startup and shutdown can report zero/unknown values. These
     // must not remove a previously valid resume point or Continue Watching row.
-    if (entry.position.inSeconds < 10 || entry.duration <= Duration.zero) {
+    if (entry.position.inSeconds < 1 || entry.duration <= Duration.zero) {
       return;
     }
     _revision++;

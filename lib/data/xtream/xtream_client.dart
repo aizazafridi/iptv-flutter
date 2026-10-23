@@ -119,5 +119,24 @@ class XtreamClient {
     );
   }
 
+  Uri catchUp(String id, String start, int minutes) {
+    if (!RegExp(r'^\d+$').hasMatch(id) ||
+        !RegExp(r'^\d{4}-\d{2}-\d{2}:\d{2}-\d{2}$').hasMatch(start) ||
+        minutes <= 0) {
+      throw const ProviderException('Invalid catch-up programme.');
+    }
+    return base.replace(
+      pathSegments: [
+        ...base.pathSegments.where((part) => part.isNotEmpty),
+        'timeshift',
+        config.username,
+        config.password,
+        '$minutes',
+        start,
+        '$id.ts',
+      ],
+    );
+  }
+
   void dispose() => _http.close(force: true);
 }

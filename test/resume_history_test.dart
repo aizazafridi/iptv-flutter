@@ -86,6 +86,38 @@ void main() {
       expect(await WatchHistory('legacy').latest(movie), isNull);
     },
   );
+  testWidgets('series offers wide resume progress and play from beginning', (
+    tester,
+  ) async {
+    final provider = FakeProvider();
+    final details = await provider.getSeriesDetails(series);
+    await WatchHistory.forProvider(
+      provider,
+    ).save(progress(series, details.episodes.first));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DetailsScreen(provider: provider, item: series),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Resume'), findsOneWidget);
+    expect(find.text('Play from beginning'), findsOneWidget);
+    expect(find.text('25 min left'), findsOneWidget);
+    expect(
+      tester
+          .getSize(
+            find.ancestor(
+              of: find.text('Resume'),
+              matching: find.byType(TextButton),
+            ),
+          )
+          .width,
+      greaterThan(250),
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    provider.dispose();
+  });
   testWidgets('movie details retain Resume after clearing watch history', (
     tester,
   ) async {
@@ -100,6 +132,14 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Resume'), findsOneWidget);
+    expect(find.text('Play from beginning'), findsOneWidget);
+    expect(find.text('25 min left'), findsOneWidget);
+    expect(
+      tester
+          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
+          .value,
+      closeTo(1 / 6, .001),
+    );
     await tester.pumpWidget(const SizedBox());
     provider.dispose();
   });

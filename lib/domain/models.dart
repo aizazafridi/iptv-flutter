@@ -129,11 +129,15 @@ class ProviderException implements Exception {
 class EpgProgramme {
   final String title, description;
   final DateTime start, end;
+
+  /// Provider wall-clock time used by its archive endpoint.
+  final String? archiveStart;
   const EpgProgramme({
     required this.title,
     required this.description,
     required this.start,
     required this.end,
+    this.archiveStart,
   });
   bool isCurrent(DateTime now) => !now.isBefore(start) && now.isBefore(end);
 }

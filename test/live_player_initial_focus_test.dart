@@ -37,6 +37,13 @@ void main() {
       await tester.pump();
       expect(pause.focusNode!.hasPrimaryFocus, isTrue);
       expect(engine.pauses, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(find.byTooltip('Exit fullscreen'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );

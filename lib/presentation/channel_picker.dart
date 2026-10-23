@@ -1,3 +1,4 @@
+import '../application/category_locks.dart';
 import 'package:flutter/material.dart';
 import 'compact_player_panel_theme.dart';
 import '../domain/models.dart';
@@ -6,6 +7,9 @@ import 'widgets.dart';
 
 class ChannelPicker extends StatefulWidget {
   final String title;
+  final bool categoriesFirst;
+  final bool embedded;
+  final VoidCallback? onClose;
   final String? currentId, categoryId;
   final IptvProvider? provider;
   final Future<bool> Function(ContentItem)? onSelect;
@@ -14,6 +18,9 @@ class ChannelPicker extends StatefulWidget {
     super.key,
     required this.title,
     required this.load,
+    this.categoriesFirst = false,
+    this.embedded = false,
+    this.onClose,
     this.currentId,
     this.categoryId,
     this.provider,
@@ -25,6 +32,9 @@ class ChannelPicker extends StatefulWidget {
 
 class _ChannelPickerState extends State<ChannelPicker> {
   late Future<List<ContentItem>> channels;
+  late bool showingCategories =
+      widget.categoriesFirst && widget.provider != null;
+  late Future<List<Category>> categoryRequest;
   late String? selectedId = widget.currentId;
   List<Category> categories = [];
   int categoryIndex = -1;
@@ -38,20 +48,50 @@ class _ChannelPickerState extends State<ChannelPicker> {
   @override
   void initState() {
     super.initState();
-    channels = load(
-      () => widget.provider != null && widget.categoryId != null
-          ? widget.provider!.getItems(
-              Category(widget.categoryId!, widget.title, ContentType.live),
-            )
-          : widget.load(),
-    );
-    loadCategories();
+    categoryRequest = fetchCategories();
+    channels = showingCategories
+        ? Future.value(<ContentItem>[])
+        : load(
+            () => widget.provider != null && widget.categoryId != null
+                ? widget.provider!.getItems(
+                    Category(
+                      widget.categoryId!,
+                      widget.title,
+                      ContentType.live,
+                    ),
+                  )
+                : widget.load(),
+          );
+    if (!showingCategories) loadCategories();
+  }
+
+  Future<List<Category>> fetchCategories() async {
+    final provider = widget.provider;
+    if (provider == null) return [];
+    final locks = CategoryLocks.forProvider(provider);
+    await locks.load();
+    final rows = await provider.getCategories(ContentType.live);
+    return rows.where((category) => !locks.hidden(category)).toList();
+  }
+
+  void openCategory(Category category, List<Category> rows) {
+    setState(() {
+      categories = rows;
+      categoryIndex = rows.indexOf(category);
+      title = category.name;
+      showingCategories = false;
+      channels = load(() async {
+        final items = await widget.provider!.getItems(category);
+        final locks = CategoryLocks.forProvider(widget.provider!);
+        return items.where((item) => !locks.titleHidden(item)).toList();
+      });
+    });
   }
 
   Future<void> loadCategories() async {
     try {
-      final result = await widget.provider?.getCategories(ContentType.live);
-      if (mounted && result != null) {
+      final result = await categoryRequest;
+      if (mounted) {
         setState(() {
           categories = result;
           categoryIndex = result.indexWhere(
@@ -135,13 +175,9 @@ class _ChannelPickerState extends State<ChannelPicker> {
   }
 
   @override
-  Widget build(BuildContext context) => Dialog(
-    backgroundColor: Colors.transparent,
-    elevation: 0,
-    alignment: Alignment.centerLeft,
-    insetPadding: const EdgeInsets.only(right: 16, top: 12, bottom: 12),
-    child: Container(
-      width: 280,
+  Widget build(BuildContext context) {
+    final panel = Container(
+      width: widget.embedded ? double.infinity : 280,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: .65),
@@ -151,91 +187,147 @@ class _ChannelPickerState extends State<ChannelPicker> {
         data: compactPlayerPanelTheme(),
         child: Column(
           children: [
-            Row(
-              children: [
-                IconButton(
-                  tooltip: 'Previous category',
-                  onPressed: categories.isEmpty || busy
-                      ? null
-                      : () => changeCategory(-1),
-                  icon: const Icon(Icons.chevron_left),
+            if (widget.onClose != null)
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Close channel selection',
+                  icon: const Icon(Icons.close),
+                  onPressed: widget.onClose,
                 ),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 14),
+              ),
+            if (showingCategories)
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  '${widget.title} - Categories',
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ),
+            if (widget.categoriesFirst &&
+                widget.provider != null &&
+                !showingCategories)
+              TextButton.icon(
+                icon: const Icon(Icons.arrow_back, size: 18),
+                label: const Text('Categories'),
+                onPressed: () => setState(() => showingCategories = true),
+              ),
+            if (!showingCategories)
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Previous category',
+                    onPressed: categories.isEmpty || busy
+                        ? null
+                        : () => changeCategory(-1),
+                    icon: const Icon(Icons.chevron_left),
                   ),
-                ),
-                IconButton(
-                  tooltip: 'Next category',
-                  onPressed: categories.isEmpty || busy
-                      ? null
-                      : () => changeCategory(1),
-                  icon: const Icon(Icons.chevron_right),
-                ),
-              ],
-            ),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Next category',
+                    onPressed: categories.isEmpty || busy
+                        ? null
+                        : () => changeCategory(1),
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
             if (busy) const LinearProgressIndicator(),
             const Divider(),
             Expanded(
-              child: AsyncView(
-                future: channels,
-                retry: () => setState(
-                  () => channels = load(
-                    categoryIndex < 0
-                        ? widget.load
-                        : () => widget.provider!.getItems(
-                            categories[categoryIndex],
-                          ),
-                  ),
-                ),
-                builder: (rows) {
-                  restoreCurrent(rows);
-                  return rows.isEmpty
-                      ? const Center(child: Text('No channels available'))
-                      : ListView.builder(
-                          controller: scroll,
-                          itemExtent: 52,
-                          itemCount: rows.length,
-                          itemBuilder: (_, index) {
-                            final channel = rows[index];
-                            return Material(
-                              color: Colors.transparent,
-                              child: ListTile(
-                                focusNode: nodes.putIfAbsent(
-                                  channel.id,
-                                  () => FocusNode(),
+              child: showingCategories
+                  ? AsyncView<List<Category>>(
+                      future: categoryRequest,
+                      retry: () =>
+                          setState(() => categoryRequest = fetchCategories()),
+                      builder: (rows) => rows.isEmpty
+                          ? const Center(child: Text('No categories available'))
+                          : ListView.builder(
+                              itemCount: rows.length,
+                              itemBuilder: (_, index) => Material(
+                                color: Colors.transparent,
+                                child: ListTile(
+                                  autofocus: index == 0,
+                                  title: Text(rows[index].name),
+                                  trailing: const Icon(
+                                    Icons.chevron_right,
+                                    size: 18,
+                                  ),
+                                  onTap: () => openCategory(rows[index], rows),
                                 ),
-                                selected: channel.id == selectedId,
-                                selectedTileColor: Colors.white.withValues(
-                                  alpha: .18,
-                                ),
-                                leading: SizedBox(
-                                  width: 30,
-                                  height: 30,
-                                  child: ChannelLogo(channel.artwork),
-                                ),
-                                title: Text(
-                                  channel.name,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: channel.id == selectedId
-                                    ? const Icon(Icons.play_arrow)
-                                    : null,
-                                onTap: () => selectChannel(channel),
                               ),
-                            );
-                          },
-                        );
-                },
-              ),
+                            ),
+                    )
+                  : AsyncView(
+                      future: channels,
+                      retry: () => setState(
+                        () => channels = load(
+                          categoryIndex < 0
+                              ? widget.load
+                              : () => widget.provider!.getItems(
+                                  categories[categoryIndex],
+                                ),
+                        ),
+                      ),
+                      builder: (rows) {
+                        restoreCurrent(rows);
+                        return rows.isEmpty
+                            ? const Center(child: Text('No channels available'))
+                            : ListView.builder(
+                                controller: scroll,
+                                itemExtent: 52,
+                                itemCount: rows.length,
+                                itemBuilder: (_, index) {
+                                  final channel = rows[index];
+                                  return Material(
+                                    color: Colors.transparent,
+                                    child: ListTile(
+                                      focusNode: nodes.putIfAbsent(
+                                        channel.id,
+                                        () => FocusNode(),
+                                      ),
+                                      selected: channel.id == selectedId,
+                                      selectedTileColor: Colors.white
+                                          .withValues(alpha: .18),
+                                      leading: SizedBox(
+                                        width: 30,
+                                        height: 30,
+                                        child: ChannelLogo(channel.artwork),
+                                      ),
+                                      title: Text(
+                                        channel.name,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      trailing: channel.id == selectedId
+                                          ? const Icon(Icons.play_arrow)
+                                          : null,
+                                      onTap: () => selectChannel(channel),
+                                    ),
+                                  );
+                                },
+                              );
+                      },
+                    ),
             ),
           ],
         ),
       ),
-    ),
-  );
+    );
+    if (widget.embedded) return panel;
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      alignment: Alignment.centerLeft,
+      insetPadding: const EdgeInsets.only(right: 16, top: 12, bottom: 12),
+      child: panel,
+    );
+  }
 }

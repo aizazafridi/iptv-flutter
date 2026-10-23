@@ -1,8 +1,13 @@
+import '../data/last_live_channel.dart';
+import 'channel_list_icon.dart';
+import 'live_health_indicator.dart';
+import 'catch_up_panel.dart';
 import '../application/video_recorder.dart';
 import '../data/video_recordings.dart';
 import '../playback/video_recording_engine.dart';
 import 'title_access.dart';
 import 'next_episode_countdown.dart';
+import 'live_multiview_screen.dart';
 import 'dart:async';
 import '../application/watch_history.dart';
 import '../playback/frame_preview.dart';
@@ -17,6 +22,7 @@ import 'video_display_dialog.dart';
 import 'subtitle_dialog.dart';
 import 'episode_picker.dart';
 import 'epg_panel.dart';
+import 'tv_guide_screen.dart';
 import 'channel_picker.dart';
 import 'live_now_playing.dart';
 import 'my_list_button.dart';
@@ -121,8 +127,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
     },
   );
   DateTime lastPositionPaint = DateTime.fromMillisecondsSinceEpoch(0);
+  KeyEventResult liveControlKeys(FocusNode node, KeyEvent event) {
+    if (!source.isLive ||
+        (event is! KeyDownEvent && event is! KeyRepeatEvent)) {
+      return KeyEventResult.ignored;
+    }
+    final focus = FocusManager.instance.primaryFocus;
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      focus?.nextFocus();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      focus?.previousFocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   bool remoteKeys(KeyEvent event) {
-    if (!mounted || event is KeyUpEvent || showAutoNext) return false;
+    if (!mounted ||
+        event is KeyUpEvent ||
+        showAutoNext ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return false;
+    }
     final key = event.logicalKey;
     if (![
       LogicalKeyboardKey.select,
@@ -156,6 +184,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() => showAutoNext = false);
     revealControls();
     playPauseFocus.requestFocus();
+  }
+
+  bool openingSplitScreen = false;
+  Future<void> openSplitScreen() async {
+    if (openingSplitScreen ||
+        !source.isLive ||
+        widget.loadChannels == null ||
+        widget.resolveChannel == null) {
+      return;
+    }
+    setState(() => openingSplitScreen = true);
+    try {
+      await liveRecovery?.close();
+      await finishLiveRecording();
+      await engine.stop();
+      if (!mounted) return;
+      final route = MaterialPageRoute<void>(
+        builder: (_) => LiveMultiviewScreen(
+          initialSource: source,
+          initialChannel: liveChannel ?? widget.item,
+          provider: widget.provider,
+          loadChannels: widget.loadChannels!,
+          resolveChannel: widget.resolveChannel!,
+          engineFactory: widget.engineFactory,
+        ),
+      );
+      await Navigator.of(context).push(route);
+      await route.completed;
+    } catch (_) {
+      recordingMessage('Could not open split screen. Please retry.');
+    } finally {
+      if (mounted) {
+        setupLiveRecovery();
+        await start();
+        if (mounted) {
+          setState(() => openingSplitScreen = false);
+          liveSurfaceFocus.requestFocus();
+        }
+      }
+    }
   }
 
   LiveStreamRecovery? liveRecovery;
@@ -336,6 +404,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       reconnectingLive = false;
       setupVideoRecorder();
       setupLiveRecovery();
+      unawaited(checkCatchUp());
       await engine.open(next);
       return true;
     } catch (_) {
@@ -364,6 +433,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool controlsVisible = true;
   Timer? controlsTimer;
   Timer? progressTimer;
+  bool savedInitialProgress = false;
   Timer? resumeRetry;
   bool resumeReady = false, resumeSeeking = false;
   int resumeAttempts = 0;
@@ -481,7 +551,114 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  String? lastSavedLiveId;
+  void rememberLiveChannel() {
+    final channel = liveChannel ?? widget.item;
+    final provider = widget.provider;
+    if (!source.isLive ||
+        channel == null ||
+        provider == null ||
+        channel.id == lastSavedLiveId) {
+      return;
+    }
+    lastSavedLiveId = channel.id;
+    unawaited(
+      LastLiveChannel.forProvider(provider).save(channel).catchError((
+        Object _,
+      ) {
+        lastSavedLiveId = null;
+      }),
+    );
+  }
+
+  bool catchUpSupported = false;
+  int catchUpCheck = 0;
+  Future<void> checkCatchUp() async {
+    final version = ++catchUpCheck;
+    catchUpSupported = false;
+    final provider = widget.provider;
+    final channel = liveChannel ?? widget.item;
+    if (!source.isLive || channel == null || provider is! CatchUpProvider) {
+      return;
+    }
+    try {
+      final supported = await (provider as CatchUpProvider).supportsCatchUp(
+        channel,
+      );
+      if (mounted && version == catchUpCheck) {
+        setState(() => catchUpSupported = supported);
+      }
+    } catch (_) {
+      // Keep the visible control disabled when availability cannot be confirmed.
+    }
+  }
+
+  bool openingCatchUp = false;
+  Future<void> showCatchUp() async {
+    final provider = widget.provider;
+    final channel = liveChannel ?? widget.item;
+    if (openingCatchUp || provider is! CatchUpProvider || channel == null) {
+      return;
+    }
+    setState(() => openingCatchUp = true);
+    var suspended = false;
+    try {
+      final programme = await showDialog<EpgProgramme>(
+        context: context,
+        builder: (_) => CatchUpPanel(
+          channelName: channel.name,
+          load: () => (provider as CatchUpProvider).getCatchUp(channel),
+        ),
+      );
+      if (programme == null || !mounted) return;
+      final archive = await (provider as CatchUpProvider).resolveCatchUp(
+        channel,
+        programme,
+      );
+      if (!mounted) return;
+      await liveRecovery?.close();
+      await finishLiveRecording();
+      await engine.stop();
+      suspended = true;
+      if (!mounted) return;
+      final route = MaterialPageRoute<void>(
+        builder: (_) =>
+            PlayerScreen(source: archive, engineFactory: widget.engineFactory),
+      );
+      await Navigator.of(context).push(route);
+      await route.completed;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not play catch-up. Please retry.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        if (suspended) {
+          setupLiveRecovery();
+          await start();
+        }
+        if (mounted) {
+          setState(() => openingCatchUp = false);
+          revealControls();
+        }
+      }
+    }
+  }
+
   Future<void> showEpg() async {
+    if (widget.provider != null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TvGuideScreen(provider: widget.provider!),
+        ),
+      );
+      if (mounted) revealControls();
+      return;
+    }
     await showDialog<void>(
       context: context,
       barrierColor: Colors.transparent,
@@ -621,6 +798,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     videoSurface = RepaintBoundary(child: engine.surface());
     setupVideoRecorder();
     setupLiveRecovery();
+    unawaited(checkCatchUp());
     if (engine is CompletionPlaybackEngine) {
       subscriptions.add(
         (engine as CompletionPlaybackEngine).completed.listen((completed) {
@@ -670,6 +848,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
             if (error != null) setState(() => error = null);
           }
           position = value;
+          if (!savedInitialProgress &&
+              !source.isLive &&
+              widget.history != null &&
+              duration > Duration.zero &&
+              position.inSeconds >= 1 &&
+              (widget.resumeAt == Duration.zero || resumed)) {
+            savedInitialProgress = true;
+            unawaited(saveProgress());
+          }
           if (!source.isLive &&
               duration > Duration.zero &&
               value >= duration &&
@@ -700,6 +887,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     subscriptions.add(
       engine.playing.listen((value) {
+        if (value) rememberLiveChannel();
         if (!value && !starting) liveRecovery?.failed();
         if (mounted) {
           setState(() {
@@ -757,6 +945,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> start() async {
+    savedInitialProgress = false;
     playbackErrorTimer?.cancel();
     playbackProgressVersion++;
     setState(() {
@@ -1210,7 +1399,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               children: [
                                 CircularProgressIndicator(
                                   value:
-                                      bufferPercent == null ||
+                                      source.isLive ||
+                                          bufferPercent == null ||
                                           bufferPercent == 0
                                       ? null
                                       : bufferPercent! / 100,
@@ -1224,7 +1414,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       : 'Buffering...',
                                   style: const TextStyle(color: Colors.white),
                                 ),
-                                if (bufferPercent != null)
+                                if (!source.isLive && bufferPercent != null)
                                   Text(
                                     'Buffer ${bufferPercent!.round()}%',
                                     style: const TextStyle(
@@ -1472,326 +1662,392 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   ),
                                 LayoutBuilder(
                                   builder: (context, constraints) {
-                                    final mainControls = Wrap(
-                                      alignment: WrapAlignment.center,
-                                      spacing: 4,
-                                      runSpacing: 4,
-                                      crossAxisAlignment:
-                                          WrapCrossAlignment.center,
-                                      children: [
-                                        if (source.isLive &&
-                                            widget.loadChannels != null &&
-                                            widget.resolveChannel != null)
-                                          IconButton(
-                                            tooltip: 'Channels',
-                                            icon: const Icon(Icons.live_tv),
-                                            onPressed: switchingChannel
-                                                ? null
-                                                : chooseChannel,
-                                          ),
+                                    final mainControls = Focus(
+                                      canRequestFocus: false,
+                                      onKeyEvent: liveControlKeys,
+                                      child: FocusTraversalGroup(
+                                        policy: ReadingOrderTraversalPolicy(),
+                                        child: Wrap(
+                                          alignment: WrapAlignment.center,
+                                          spacing: 4,
+                                          runSpacing: 4,
+                                          crossAxisAlignment:
+                                              WrapCrossAlignment.center,
+                                          children: [
+                                            if (source.isLive &&
+                                                widget.loadChannels != null &&
+                                                widget.resolveChannel != null)
+                                              IconButton(
+                                                tooltip: 'Channels',
+                                                icon: const ChannelListIcon(),
+                                                onPressed: switchingChannel
+                                                    ? null
+                                                    : chooseChannel,
+                                              ),
 
-                                        if (source.isLive)
-                                          IconButton(
-                                            tooltip: 'Programme guide',
-                                            icon: const Icon(
-                                              Icons.view_list_outlined,
-                                            ),
-                                            onPressed: showEpg,
-                                          ),
-                                        if (!source.isLive)
-                                          SizedBox(
-                                            key: const ValueKey('seek-control'),
-                                            width: 84,
-                                            height: 36,
-                                            child: Row(
-                                              children: [
-                                                SizedBox(
-                                                  width: 28,
-                                                  child: IconButton(
-                                                    padding: EdgeInsets.zero,
-                                                    constraints:
-                                                        const BoxConstraints(
-                                                          minWidth: 28,
-                                                          minHeight: 36,
-                                                        ),
-                                                    tooltip:
-                                                        'Rewind $seekLabel',
-                                                    icon: const Icon(
-                                                      Icons.fast_rewind,
-                                                      size: 18,
-                                                    ),
-                                                    onPressed:
-                                                        recordingLocksPlayback
-                                                        ? null
-                                                        : () => seek(
-                                                            position -
-                                                                Duration(
-                                                                  seconds:
-                                                                      seekSeconds,
-                                                                ),
-                                                          ),
-                                                  ),
+                                            if (source.isLive)
+                                              IconButton(
+                                                tooltip: 'Programme guide',
+                                                icon: const Icon(
+                                                  Icons.view_list_outlined,
                                                 ),
-                                                SizedBox(
-                                                  width: 28,
-                                                  height: 36,
-                                                  child: PopupMenuButton<int>(
-                                                    tooltip: 'Seek interval',
-                                                    enabled:
-                                                        !recordingLocksPlayback,
-                                                    initialValue: seekSeconds,
-                                                    onSelected: (value) {
-                                                      if (recordingLocksPlayback) {
-                                                        return;
-                                                      }
-                                                      setState(
-                                                        () =>
-                                                            seekSeconds = value,
-                                                      );
-                                                      unawaited(
-                                                        savePlaybackPreferences(),
-                                                      );
-                                                    },
-                                                    itemBuilder: (_) => const [
-                                                      PopupMenuItem(
-                                                        value: 30,
-                                                        child: Text(
-                                                          '30 seconds',
-                                                        ),
-                                                      ),
-                                                      PopupMenuItem(
-                                                        value: 60,
-                                                        child: Text('1 minute'),
-                                                      ),
-                                                      PopupMenuItem(
-                                                        value: 120,
-                                                        child: Text(
-                                                          '2 minutes',
-                                                        ),
-                                                      ),
-                                                      PopupMenuItem(
-                                                        value: 180,
-                                                        child: Text(
-                                                          '3 minutes',
-                                                        ),
-                                                      ),
-                                                    ],
-                                                    child: Center(
-                                                      child: FittedBox(
-                                                        fit: BoxFit.scaleDown,
-                                                        child: Row(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
-                                                          children: [
-                                                            const Icon(
-                                                              Icons
-                                                                  .timer_outlined,
-                                                              size: 18,
+                                                onPressed: showEpg,
+                                              ),
+                                            if (source.isLive &&
+                                                widget.loadChannels != null &&
+                                                widget.resolveChannel != null &&
+                                                engine is AudioPlaybackEngine)
+                                              IconButton(
+                                                tooltip: 'Split screen',
+                                                icon: const Icon(
+                                                  Icons.splitscreen_outlined,
+                                                ),
+                                                onPressed: openingSplitScreen
+                                                    ? null
+                                                    : openSplitScreen,
+                                              ),
+                                            if (source.isLive)
+                                              LiveHealthIndicator(
+                                                position: position,
+                                                playing: playing,
+                                                starting: starting,
+                                                buffering: buffering,
+                                                reconnecting: reconnectingLive,
+                                              ),
+                                            if (source.isLive)
+                                              IconButton(
+                                                tooltip: catchUpSupported
+                                                    ? 'Catch-up'
+                                                    : 'Catch-up unavailable for this channel',
+                                                disabledColor: Colors.white30,
+                                                icon: const Icon(Icons.history),
+                                                onPressed:
+                                                    openingCatchUp ||
+                                                        !catchUpSupported
+                                                    ? null
+                                                    : showCatchUp,
+                                              ),
+                                            if (!source.isLive)
+                                              SizedBox(
+                                                key: const ValueKey(
+                                                  'seek-control',
+                                                ),
+                                                width: 84,
+                                                height: 36,
+                                                child: Row(
+                                                  children: [
+                                                    SizedBox(
+                                                      width: 28,
+                                                      child: IconButton(
+                                                        padding:
+                                                            EdgeInsets.zero,
+                                                        constraints:
+                                                            const BoxConstraints(
+                                                              minWidth: 28,
+                                                              minHeight: 36,
                                                             ),
-                                                            const Icon(
-                                                              Icons
-                                                                  .arrow_drop_down,
-                                                              size: 16,
+                                                        tooltip:
+                                                            'Rewind $seekLabel',
+                                                        icon: const Icon(
+                                                          Icons.fast_rewind,
+                                                          size: 18,
+                                                        ),
+                                                        onPressed:
+                                                            recordingLocksPlayback
+                                                            ? null
+                                                            : () => seek(
+                                                                position -
+                                                                    Duration(
+                                                                      seconds:
+                                                                          seekSeconds,
+                                                                    ),
+                                                              ),
+                                                      ),
+                                                    ),
+                                                    SizedBox(
+                                                      width: 28,
+                                                      height: 36,
+                                                      child: PopupMenuButton<int>(
+                                                        tooltip:
+                                                            'Seek interval',
+                                                        enabled:
+                                                            !recordingLocksPlayback,
+                                                        initialValue:
+                                                            seekSeconds,
+                                                        onSelected: (value) {
+                                                          if (recordingLocksPlayback) {
+                                                            return;
+                                                          }
+                                                          setState(
+                                                            () => seekSeconds =
+                                                                value,
+                                                          );
+                                                          unawaited(
+                                                            savePlaybackPreferences(),
+                                                          );
+                                                        },
+                                                        itemBuilder: (_) =>
+                                                            const [
+                                                              PopupMenuItem(
+                                                                value: 30,
+                                                                child: Text(
+                                                                  '30 seconds',
+                                                                ),
+                                                              ),
+                                                              PopupMenuItem(
+                                                                value: 60,
+                                                                child: Text(
+                                                                  '1 minute',
+                                                                ),
+                                                              ),
+                                                              PopupMenuItem(
+                                                                value: 120,
+                                                                child: Text(
+                                                                  '2 minutes',
+                                                                ),
+                                                              ),
+                                                              PopupMenuItem(
+                                                                value: 180,
+                                                                child: Text(
+                                                                  '3 minutes',
+                                                                ),
+                                                              ),
+                                                            ],
+                                                        child: Center(
+                                                          child: FittedBox(
+                                                            fit: BoxFit
+                                                                .scaleDown,
+                                                            child: Row(
+                                                              mainAxisSize:
+                                                                  MainAxisSize
+                                                                      .min,
+                                                              children: [
+                                                                const Icon(
+                                                                  Icons
+                                                                      .timer_outlined,
+                                                                  size: 18,
+                                                                ),
+                                                                const Icon(
+                                                                  Icons
+                                                                      .arrow_drop_down,
+                                                                  size: 16,
+                                                                ),
+                                                              ],
                                                             ),
-                                                          ],
+                                                          ),
                                                         ),
                                                       ),
                                                     ),
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  width: 28,
-                                                  child: IconButton(
-                                                    padding: EdgeInsets.zero,
-                                                    constraints:
-                                                        const BoxConstraints(
-                                                          minWidth: 28,
-                                                          minHeight: 36,
+                                                    SizedBox(
+                                                      width: 28,
+                                                      child: IconButton(
+                                                        padding:
+                                                            EdgeInsets.zero,
+                                                        constraints:
+                                                            const BoxConstraints(
+                                                              minWidth: 28,
+                                                              minHeight: 36,
+                                                            ),
+                                                        tooltip:
+                                                            'Forward $seekLabel',
+                                                        icon: const Icon(
+                                                          Icons.fast_forward,
+                                                          size: 18,
                                                         ),
-                                                    tooltip:
-                                                        'Forward $seekLabel',
-                                                    icon: const Icon(
-                                                      Icons.fast_forward,
-                                                      size: 18,
+                                                        onPressed:
+                                                            recordingLocksPlayback
+                                                            ? null
+                                                            : () => seek(
+                                                                position +
+                                                                    Duration(
+                                                                      seconds:
+                                                                          seekSeconds,
+                                                                    ),
+                                                              ),
+                                                      ),
                                                     ),
-                                                    onPressed:
+                                                  ],
+                                                ),
+                                              ),
+                                            if (!source.isLive)
+                                              SizedBox(
+                                                key: const ValueKey(
+                                                  'speed-control',
+                                                ),
+                                                width: 36,
+                                                height: 36,
+                                                child: PopupMenuButton<double>(
+                                                  tooltip: 'Playback speed',
+                                                  enabled:
+                                                      !recordingLocksPlayback,
+                                                  initialValue: playbackRate,
+                                                  onSelected: setPlaybackRate,
+                                                  itemBuilder: (_) => const [
+                                                    PopupMenuItem(
+                                                      value: 1,
+                                                      child: Text('Normal'),
+                                                    ),
+                                                    PopupMenuItem(
+                                                      value: 0.5,
+                                                      child: Text('0.5×'),
+                                                    ),
+                                                    PopupMenuItem(
+                                                      value: 2,
+                                                      child: Text('2×'),
+                                                    ),
+                                                    PopupMenuItem(
+                                                      value: 3,
+                                                      child: Text('3×'),
+                                                    ),
+                                                    PopupMenuItem(
+                                                      value: 5,
+                                                      child: Text('5×'),
+                                                    ),
+                                                  ],
+                                                  child: Icon(
+                                                    Icons.speed,
+                                                    color:
                                                         recordingLocksPlayback
-                                                        ? null
-                                                        : () => seek(
-                                                            position +
-                                                                Duration(
-                                                                  seconds:
-                                                                      seekSeconds,
-                                                                ),
-                                                          ),
+                                                        ? Colors.white30
+                                                        : null,
                                                   ),
                                                 ),
-                                              ],
-                                            ),
-                                          ),
-                                        if (!source.isLive)
-                                          SizedBox(
-                                            key: const ValueKey(
-                                              'speed-control',
-                                            ),
-                                            width: 36,
-                                            height: 36,
-                                            child: PopupMenuButton<double>(
-                                              tooltip: 'Playback speed',
-                                              enabled: !recordingLocksPlayback,
-                                              initialValue: playbackRate,
-                                              onSelected: setPlaybackRate,
-                                              itemBuilder: (_) => const [
-                                                PopupMenuItem(
-                                                  value: 1,
-                                                  child: Text('Normal'),
+                                              ),
+                                            SizedBox(
+                                              key: const ValueKey(
+                                                'play-pause-control',
+                                              ),
+                                              width: 36,
+                                              height: 36,
+                                              child: IconButton(
+                                                autofocus: !source.isLive,
+                                                focusNode: playPauseFocus,
+                                                style: ButtonStyle(
+                                                  backgroundColor:
+                                                      const WidgetStatePropertyAll(
+                                                        Colors.transparent,
+                                                      ),
+                                                  foregroundColor:
+                                                      WidgetStateProperty.resolveWith(
+                                                        (states) =>
+                                                            states.contains(
+                                                              WidgetState
+                                                                  .focused,
+                                                            )
+                                                            ? Colors.white
+                                                            : Colors.white70,
+                                                      ),
+                                                  overlayColor:
+                                                      const WidgetStatePropertyAll(
+                                                        Colors.white12,
+                                                      ),
                                                 ),
-                                                PopupMenuItem(
-                                                  value: 0.5,
-                                                  child: Text('0.5×'),
+                                                tooltip: playing
+                                                    ? 'Pause'
+                                                    : 'Play',
+                                                onPressed: togglePlayback,
+                                                icon: Icon(
+                                                  playing
+                                                      ? Icons.pause
+                                                      : Icons.play_arrow,
                                                 ),
-                                                PopupMenuItem(
-                                                  value: 2,
-                                                  child: Text('2×'),
-                                                ),
-                                                PopupMenuItem(
-                                                  value: 3,
-                                                  child: Text('3×'),
-                                                ),
-                                                PopupMenuItem(
-                                                  value: 5,
-                                                  child: Text('5×'),
-                                                ),
-                                              ],
-                                              child: Icon(
-                                                Icons.speed,
-                                                color: recordingLocksPlayback
-                                                    ? Colors.white30
-                                                    : null,
                                               ),
                                             ),
-                                          ),
-                                        SizedBox(
-                                          key: const ValueKey(
-                                            'play-pause-control',
-                                          ),
-                                          width: 36,
-                                          height: 36,
-                                          child: IconButton(
-                                            autofocus: !source.isLive,
-                                            focusNode: playPauseFocus,
-                                            style: ButtonStyle(
-                                              backgroundColor:
-                                                  const WidgetStatePropertyAll(
-                                                    Colors.transparent,
-                                                  ),
-                                              foregroundColor:
-                                                  WidgetStateProperty.resolveWith(
-                                                    (states) =>
-                                                        states.contains(
-                                                          WidgetState.focused,
-                                                        )
-                                                        ? Colors.white
-                                                        : Colors.white70,
-                                                  ),
-                                              overlayColor:
-                                                  const WidgetStatePropertyAll(
-                                                    Colors.white12,
-                                                  ),
-                                            ),
-                                            tooltip: playing ? 'Pause' : 'Play',
-                                            onPressed: togglePlayback,
-                                            icon: Icon(
-                                              playing
-                                                  ? Icons.pause
-                                                  : Icons.play_arrow,
-                                            ),
-                                          ),
-                                        ),
-                                        if (engine is VideoDisplayEngine) ...[
-                                          IconButton(
-                                            tooltip: 'Aspect ratio',
-                                            icon: const Icon(
-                                              Icons.aspect_ratio,
-                                            ),
-                                            onPressed: () async {
-                                              await showDialog<void>(
-                                                context: context,
-                                                builder: (_) => VideoDisplayDialog(
-                                                  engine:
-                                                      engine
-                                                          as VideoDisplayEngine,
+                                            if (engine
+                                                is VideoDisplayEngine) ...[
+                                              IconButton(
+                                                tooltip: 'Aspect ratio',
+                                                icon: const Icon(
+                                                  Icons.aspect_ratio,
                                                 ),
-                                              );
-                                              await savePlaybackPreferences();
-                                            },
-                                          ),
-                                        ],
-                                        if (source.isLive) ...[
-                                          if (widget.provider != null &&
-                                              (liveChannel ?? widget.item) !=
-                                                  null)
-                                            MyListButton(
-                                              key: ValueKey(
-                                                (liveChannel ?? widget.item)!
-                                                    .id,
+                                                onPressed: () async {
+                                                  await showDialog<void>(
+                                                    context: context,
+                                                    builder: (_) =>
+                                                        VideoDisplayDialog(
+                                                          engine:
+                                                              engine
+                                                                  as VideoDisplayEngine,
+                                                        ),
+                                                  );
+                                                  await savePlaybackPreferences();
+                                                },
                                               ),
-                                              provider: widget.provider!,
-                                              item:
-                                                  (liveChannel ?? widget.item)!,
-                                            ),
-                                        ],
-                                        if (videoRecorder != null)
-                                          IconButton(
-                                            tooltip: videoRecorder!.recording
-                                                ? 'Stop recording'
-                                                : 'Record',
-                                            onPressed:
-                                                videoRecorder!.busy ||
-                                                    starting ||
-                                                    reconnectingLive ||
-                                                    switchingChannel
-                                                ? null
-                                                : toggleFileRecording,
-                                            icon: Icon(
-                                              videoRecorder!.recording
-                                                  ? Icons.stop_circle
-                                                  : Icons.fiber_manual_record,
-                                              color: videoRecorder!.recording
-                                                  ? Colors.redAccent
-                                                  : null,
-                                            ),
-                                          ),
-                                        if (!source.isLive)
-                                          IconButton(
-                                            tooltip: 'Subtitles',
-                                            onPressed: subtitleMenu,
-                                            icon: const Icon(
-                                              Icons.subtitles_outlined,
-                                            ),
-                                          ),
-                                        IconButton(
-                                          tooltip: fullscreen
-                                              ? 'Exit fullscreen'
-                                              : 'Fullscreen',
-                                          onPressed: toggleFullscreen,
-                                          icon: Icon(
-                                            fullscreen
-                                                ? Icons.fullscreen_exit
-                                                : Icons.fullscreen,
-                                          ),
-                                        ),
-                                        if (source.isLive)
-                                          const Padding(
-                                            padding: EdgeInsets.only(left: 12),
-                                            child: Text(
-                                              '● LIVE',
-                                              style: TextStyle(
+                                            ],
+                                            if (source.isLive) ...[
+                                              if (widget.provider != null &&
+                                                  (liveChannel ??
+                                                          widget.item) !=
+                                                      null)
+                                                MyListButton(
+                                                  key: ValueKey(
+                                                    (liveChannel ??
+                                                            widget.item)!
+                                                        .id,
+                                                  ),
+                                                  provider: widget.provider!,
+                                                  item:
+                                                      (liveChannel ??
+                                                      widget.item)!,
+                                                ),
+                                            ],
+                                            if (videoRecorder != null)
+                                              IconButton(
+                                                tooltip:
+                                                    videoRecorder!.recording
+                                                    ? 'Stop recording'
+                                                    : 'Record',
                                                 color: Colors.redAccent,
+                                                disabledColor: Colors.redAccent
+                                                    .withValues(alpha: .35),
+                                                onPressed:
+                                                    videoRecorder!.busy ||
+                                                        starting ||
+                                                        reconnectingLive ||
+                                                        switchingChannel
+                                                    ? null
+                                                    : toggleFileRecording,
+                                                icon: Icon(
+                                                  videoRecorder!.recording
+                                                      ? Icons.stop_circle
+                                                      : Icons
+                                                            .fiber_manual_record,
+                                                ),
+                                              ),
+                                            if (!source.isLive)
+                                              IconButton(
+                                                tooltip: 'Subtitles',
+                                                onPressed: subtitleMenu,
+                                                icon: const Icon(
+                                                  Icons.subtitles_outlined,
+                                                ),
+                                              ),
+                                            IconButton(
+                                              tooltip: fullscreen
+                                                  ? 'Exit fullscreen'
+                                                  : 'Fullscreen',
+                                              onPressed: toggleFullscreen,
+                                              icon: Icon(
+                                                fullscreen
+                                                    ? Icons.fullscreen_exit
+                                                    : Icons.fullscreen,
                                               ),
                                             ),
-                                          ),
-                                      ],
+                                            if (source.isLive)
+                                              const Padding(
+                                                padding: EdgeInsets.only(
+                                                  left: 12,
+                                                ),
+                                                child: Text(
+                                                  '● LIVE',
+                                                  style: TextStyle(
+                                                    color: Colors.redAccent,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
                                     );
                                     final episodeControls = Padding(
                                       padding: const EdgeInsets.only(left: 8),

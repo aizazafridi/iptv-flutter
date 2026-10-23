@@ -3,7 +3,7 @@ import '../domain/models.dart';
 import '../application/category_locks.dart';
 
 /// Enforces locks in the API boundary, including search and playback entry points.
-class LockedProvider implements IptvProvider, EpgProvider {
+class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
   final IptvProvider delegate;
   final CategoryLocks locks;
   final Map<ContentType, Future<List<ContentItem>>> _catalogs = {};
@@ -135,6 +135,39 @@ class LockedProvider implements IptvProvider, EpgProvider {
     final provider = delegate;
     if (provider is! EpgProvider) return [];
     return (provider as EpgProvider).getEpg(channel);
+  }
+
+  @override
+  Future<bool> supportsCatchUp(ContentItem channel) async {
+    await _checkItem(channel);
+    final provider = delegate;
+    return provider is CatchUpProvider
+        ? (provider as CatchUpProvider).supportsCatchUp(channel)
+        : false;
+  }
+
+  @override
+  Future<List<EpgProgramme>> getCatchUp(ContentItem channel) async {
+    await _checkItem(channel);
+    final provider = delegate;
+    return provider is CatchUpProvider
+        ? (provider as CatchUpProvider).getCatchUp(channel)
+        : [];
+  }
+
+  @override
+  Future<PlaybackSource> resolveCatchUp(
+    ContentItem channel,
+    EpgProgramme programme,
+  ) async {
+    await _checkItem(channel);
+    final provider = delegate;
+    if (provider is! CatchUpProvider) {
+      throw const ProviderException(
+        'Catch-up is not supported by this provider.',
+      );
+    }
+    return (provider as CatchUpProvider).resolveCatchUp(channel, programme);
   }
 
   @override

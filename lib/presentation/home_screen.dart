@@ -5,12 +5,11 @@ import '../application/session.dart';
 import '../application/appearance.dart';
 import 'settings_screen.dart';
 import '../domain/models.dart';
-import 'browse_screen.dart';
 import 'widgets.dart';
 import 'profile_avatar.dart';
 import 'profile_loading.dart';
 import 'system_clock.dart';
-import 'home_category_card.dart';
+import 'dashboard.dart';
 
 class HomeScreen extends StatefulWidget {
   final Session session;
@@ -568,75 +567,22 @@ class _HomeScreenState extends State<HomeScreen> {
     },
   );
 
-  Widget dashboard() {
-    final session = widget.session;
-    return LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            minHeight: (constraints.maxHeight - 48).clamp(0, double.infinity),
-          ),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                const Text(
-                  'What are we watching?',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-                ),
-                const SizedBox(height: 8),
-                if (session.error != null)
-                  Text(
-                    session.error!,
-                    style: const TextStyle(color: Colors.orangeAccent),
-                  ),
-                const SizedBox(height: 32),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: session.provider!.supportedTypes
-                      .map(
-                        (type) => SizedBox(
-                          // Reserve page padding and gaps so all categories fit on TV.
-                          width: constraints.maxWidth >= 700
-                              ? ((constraints.maxWidth -
-                                            48 -
-                                            12 *
-                                                (session
-                                                        .provider!
-                                                        .supportedTypes
-                                                        .length -
-                                                    1)) /
-                                        session.provider!.supportedTypes.length)
-                                    .clamp(0, 330)
-                              : (constraints.maxWidth - 48).clamp(0, 330),
-                          child: HomeCategoryCard(
-                            type: type,
-                            onTap: () => Navigator.of(context).push(
-                              SmoothPageRoute<void>(
-                                builder: (_) => BrowseScreen(
-                                  provider: session.provider!,
-                                  type: type,
-                                  appearance: widget.appearance,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      )
-                      .toList(),
-                ),
-              ],
-            ),
-          ),
+  Widget dashboard() => StreamoraDashboard(
+    key: ValueKey(widget.session.activeProfile?.id ?? widget.session.provider),
+    session: widget.session,
+    appearance: widget.appearance,
+    onSettings: () => Navigator.of(context).push(
+      SmoothPageRoute<void>(
+        builder: (_) => SettingsScreen(
+          session: widget.session,
+          appearance: widget.appearance,
+          switchUser: switchUser,
+          addAccount: addAccount,
+          editAccount: editAccount,
         ),
       ),
-    );
-  }
+    ),
+  );
 }
 
 class EmptyLoading extends StatelessWidget {

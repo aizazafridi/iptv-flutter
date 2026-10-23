@@ -32,7 +32,10 @@ class _CategoryLockSettingsScreenState
   String filter = 'All';
   Future<List<Category>> load() async {
     await locks.load();
-    return raw.getCategories(widget.type);
+    return [
+      CategoryLocks.recordingsCategory(widget.type),
+      ...await raw.getCategories(widget.type),
+    ];
   }
 
   Future<void> change(
@@ -144,7 +147,11 @@ class _CategoryLockSettingsScreenState
                       hidden: locks.hidden(category),
                       protected: locks.configured(category),
                       pinEnabled: locks.hasPassword,
-                      onTitle: () => titles(category),
+                      onTitle: () =>
+                          category.id ==
+                              CategoryLocks.recordingsCategory(widget.type).id
+                          ? change(category, !locks.configured(category))
+                          : titles(category),
                       onHide: (value) => change(category, value, hide: true),
                       onPin: (value) => change(category, value),
                     );

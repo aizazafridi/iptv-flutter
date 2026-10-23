@@ -4,7 +4,7 @@ import '../../domain/models.dart';
 import 'xtream_client.dart';
 
 /// All Xtream response mapping lives here. No raw dictionaries reach a screen.
-class XtreamProvider implements IptvProvider, EpgProvider {
+class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
   final XtreamClient client;
   @override
   final String displayName;
@@ -313,6 +313,95 @@ class XtreamProvider implements IptvProvider, EpgProvider {
     }
   }
 
+  @override
+  Future<bool> supportsCatchUp(ContentItem channel) async {
+    if (channel.type != ContentType.live) return false;
+    final rows = _list(
+      await client.request(
+        action: 'get_live_streams',
+        params: {'category_id': ?channel.categoryId},
+      ),
+    );
+    return rows.whereType<Map<String, dynamic>>().any(
+      (row) =>
+          _text(row['stream_id']) == channel.id &&
+          _text(row['tv_archive']) == '1' &&
+          (int.tryParse(_text(row['tv_archive_duration'])) ?? 0) > 0,
+    );
+  }
+
+  @override
+  Future<List<EpgProgramme>> getCatchUp(ContentItem channel) async {
+    if (channel.type != ContentType.live) return [];
+    // Fetch current capabilities even for channels restored from My List.
+    final channels = _list(
+      await client.request(
+        action: 'get_live_streams',
+        params: {'category_id': ?channel.categoryId},
+      ),
+    );
+    final matching = channels.whereType<Map<String, dynamic>>().where(
+      (row) => _text(row['stream_id']) == channel.id,
+    );
+    if (matching.isEmpty) return [];
+    final row = matching.first;
+    final days = int.tryParse(_text(row['tv_archive_duration'])) ?? 0;
+    if (_text(row['tv_archive']) != '1' || days <= 0) return [];
+    final response = _map(
+      await client.request(
+        action: 'get_simple_data_table',
+        params: {'stream_id': channel.id},
+      ),
+    );
+    final rows = _list(response['epg_listings'] ?? [])
+        .whereType<Map<String, dynamic>>()
+        .where((row) => _text(row['has_archive']) == '1')
+        .toList();
+    final now = DateTime.now();
+    final earliest = now.subtract(Duration(days: days));
+    return _epgRows({'epg_listings': rows})
+        .where(
+          (p) =>
+              p.archiveStart != null &&
+              !p.start.isBefore(earliest) &&
+              !p.end.isAfter(now),
+        )
+        .toList()
+      ..sort((a, b) => b.start.compareTo(a.start));
+  }
+
+  @override
+  Future<PlaybackSource> resolveCatchUp(
+    ContentItem channel,
+    EpgProgramme programme,
+  ) async {
+    final now = DateTime.now();
+    if (channel.type != ContentType.live ||
+        programme.archiveStart == null ||
+        programme.end.isAfter(now) ||
+        !programme.end.isAfter(programme.start)) {
+      throw const ProviderException(
+        'This programme is not available for catch-up.',
+      );
+    }
+    return PlaybackSource(
+      uri: client.catchUp(
+        channel.id,
+        programme.archiveStart!,
+        (programme.end.difference(programme.start).inSeconds / 60).ceil(),
+      ),
+      title: '${channel.name} ? ${programme.title}',
+      headers: const {'User-Agent': 'VLC/3.0.21 LibVLC/3.0.21'},
+    );
+  }
+
+  String? _archiveStart(dynamic value) {
+    final match = RegExp(
+      r'^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):\d{2}$',
+    ).firstMatch(_text(value));
+    return match == null ? null : '${match[1]}:${match[2]}-${match[3]}';
+  }
+
   List<EpgProgramme> _epgRows(dynamic response) {
     final raw = _map(response)['epg_listings'];
     if (raw == null || raw is List && raw.isEmpty) return [];
@@ -325,6 +414,7 @@ class XtreamProvider implements IptvProvider, EpgProvider {
       if (start == null || end == null || !end.isAfter(start)) continue;
       result.add(
         EpgProgramme(
+          archiveStart: _archiveStart(value['start']),
           title: _epgText(value['title']),
           description: _epgText(value['description']),
           start: start,

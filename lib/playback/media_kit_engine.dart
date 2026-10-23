@@ -12,6 +12,7 @@ import 'frame_preview.dart';
 class MediaKitEngine
     implements
         PlaybackEngine,
+        AudioPlaybackEngine,
         CompletionPlaybackEngine,
         VideoRecordingEngine,
         BufferingPlaybackEngine,
@@ -173,6 +174,8 @@ class MediaKitEngine
 
   @override
   Future<void> togglePause() => _player.playOrPause();
+  @override
+  Future<void> setVolume(double volume) => _player.setVolume(volume);
   @override
   Future<void> seek(Duration position) => _player.seek(position);
   @override

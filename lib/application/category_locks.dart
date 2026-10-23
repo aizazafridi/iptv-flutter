@@ -6,6 +6,9 @@ import '../domain/iptv_provider.dart';
 import 'watch_history.dart';
 
 class CategoryLocks extends ChangeNotifier {
+  static Category recordingsCategory(ContentType type) =>
+      Category('__streamora_recordings__', 'Recordings', type);
+
   static final _instances = Expando<CategoryLocks>();
   static CategoryLocks forProvider(IptvProvider provider) =>
       _instances[provider] ??= CategoryLocks(

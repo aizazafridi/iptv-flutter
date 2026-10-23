@@ -73,6 +73,15 @@ class _DetailsScreenState extends State<DetailsScreen> {
         final selected = episode != null && visibleEpisodes.contains(episode)
             ? episode
             : (visibleEpisodes.isEmpty ? null : visibleEpisodes.first);
+        final canResume =
+            previous != null &&
+            (!series || selected?.id == previous?.episode?.id);
+        final played = canResume ? previous!.position : Duration.zero;
+        final length = canResume ? previous!.duration : Duration.zero;
+        final remaining = ((length - played).inSeconds / 60).ceil().clamp(
+          0,
+          99999,
+        );
         final metadata = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -180,17 +189,23 @@ class _DetailsScreenState extends State<DetailsScreen> {
               runSpacing: 12,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      style: myListControlStyle(compact: series),
+                Tooltip(
+                  message: canResume ? 'Resume' : 'Play',
+                  child: SizedBox(
+                    width: canResume ? 330 : 110,
+                    child: TextButton(
                       autofocus: true,
-                      tooltip:
-                          previous != null &&
-                              (!series || selected?.id == previous?.episode?.id)
-                          ? 'Resume'
-                          : 'Play',
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: Colors.transparent,
+                        minimumSize: const Size(0, 44),
+                        side: const BorderSide(color: Colors.white54),
+                        shape: const StadiumBorder(),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                      ),
                       onPressed: resolving || (series && selected == null)
                           ? null
                           : () => play(
@@ -199,31 +214,68 @@ class _DetailsScreenState extends State<DetailsScreen> {
                               episodes,
                               artwork: info.artwork,
                             ),
-                      icon: const Icon(Icons.play_arrow_rounded),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: resolving || (series && selected == null)
-                          ? null
-                          : () => play(
-                              info.item,
-                              selected,
-                              episodes,
-                              artwork: info.artwork,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.play_arrow_rounded, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            resolving
+                                ? 'Preparing...'
+                                : canResume
+                                ? 'Resume'
+                                : 'Play',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                          if (canResume) ...[
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: LinearProgressIndicator(
+                                value: length.inMilliseconds > 0
+                                    ? (played.inMilliseconds /
+                                              length.inMilliseconds)
+                                          .clamp(0.0, 1.0)
+                                    : 0,
+                                minHeight: 3,
+                                color: Colors.white,
+                                backgroundColor: Colors.white24,
+                                semanticsLabel: 'Playback progress',
+                              ),
                             ),
-                      child: Text(
-                        resolving
-                            ? 'Preparing?'
-                            : previous != null &&
-                                  (!series ||
-                                      selected?.id == previous?.episode?.id)
-                            ? 'Resume'
-                            : 'Play',
-                        style: series ? const TextStyle(fontSize: 13) : null,
+                            const SizedBox(width: 12),
+                            Text(
+                              '$remaining min left',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
+                if (canResume)
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(0, 44),
+                      side: const BorderSide(color: Colors.white54),
+                      shape: const StadiumBorder(),
+                    ),
+                    onPressed: resolving
+                        ? null
+                        : () => play(
+                            info.item,
+                            selected,
+                            episodes,
+                            artwork: info.artwork,
+                            fromBeginning: true,
+                          ),
+                    icon: const Icon(Icons.replay, size: 18),
+                    label: const Text(
+                      'Play from beginning',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -276,12 +328,18 @@ class _DetailsScreenState extends State<DetailsScreen> {
     Episode? selected,
     List<Episode> episodes, {
     Uri? artwork,
+    bool fromBeginning = false,
   }) async {
     setState(() => resolving = true);
     try {
       Episode? current = selected;
+      var startOver = fromBeginning;
       while (mounted) {
         final saved = await history.latest(item, episode: current);
+        final resumePosition = startOver
+            ? Duration.zero
+            : saved?.position ?? Duration.zero;
+        startOver = false;
         final source = await widget.provider.resolvePlayback(
           item,
           episode: current,
@@ -302,7 +360,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
             nextEpisode: next,
             episodes: episodes,
             seriesArtwork: artwork,
-            resumeAt: saved?.position ?? Duration.zero,
+            resumeAt: resumePosition,
           ),
         );
         final requested = await Navigator.of(context).push(route);

@@ -20,3 +20,13 @@ abstract interface class IptvProvider {
   Future<PlaybackSource> resolvePlayback(ContentItem item, {Episode? episode});
   void dispose();
 }
+
+/// Optional archive capability; other provider implementations remain independent.
+abstract interface class CatchUpProvider {
+  Future<bool> supportsCatchUp(ContentItem channel);
+  Future<List<EpgProgramme>> getCatchUp(ContentItem channel);
+  Future<PlaybackSource> resolveCatchUp(
+    ContentItem channel,
+    EpgProgramme programme,
+  );
+}

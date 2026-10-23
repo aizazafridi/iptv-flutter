@@ -29,3 +29,8 @@ abstract interface class BufferingPlaybackEngine {
 abstract interface class CompletionPlaybackEngine {
   Stream<bool> get completed;
 }
+
+/// Optional audio routing for independent simultaneous players.
+abstract interface class AudioPlaybackEngine {
+  Future<void> setVolume(double volume);
+}
