@@ -1,3 +1,4 @@
+import 'live_tv_launch_screen.dart';
 import 'on_now_panel.dart';
 import 'weather_panel.dart';
 import '../data/last_live_channel.dart';
@@ -18,7 +19,6 @@ import 'recordings_library_screen.dart';
 import 'lock_password_dialog.dart';
 import 'title_access.dart';
 import 'search_screen.dart';
-import 'tv_guide_screen.dart';
 import 'smooth_page_route.dart';
 import 'my_list_button.dart';
 
@@ -165,7 +165,13 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
   }
 
   void browse(ContentType type) => push(
-    BrowseScreen(provider: provider, type: type, appearance: widget.appearance),
+    type == ContentType.live
+        ? LiveTvLaunchScreen(provider: provider)
+        : BrowseScreen(
+            provider: provider,
+            type: type,
+            appearance: widget.appearance,
+          ),
   );
   Future<void> openItem(ContentItem item) async {
     if (!await requestTitleAccess(context, provider, item) || !mounted) return;
@@ -193,6 +199,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
       await push(
         PlayerScreen(
           source: source,
+          liveTvMode: true,
           item: item,
           provider: provider,
           loadChannels: () => item.categoryId == null
@@ -282,7 +289,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
     if (selected != null && mounted) await openItem(selected);
   }
 
-  Future<void> guide() => push(TvGuideScreen(provider: provider));
+  Future<void> guide() =>
+      push(LiveTvLaunchScreen(provider: provider, openGuide: true));
   void search() => push(
     DefaultTabController(
       length: provider.supportedTypes.length,

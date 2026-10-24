@@ -65,7 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return KeyEventResult.handled;
         }
         if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-          if (index < 3) {
+          if (index < (isM3u ? 1 : 3)) {
             accountFields[index + 1].requestFocus();
           } else {
             node.nextFocus();
@@ -75,6 +75,8 @@ class _HomeScreenState extends State<HomeScreen> {
         if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
           if (index > 0) {
             accountFields[index - 1].requestFocus();
+          } else {
+            connectionTypeFocus.requestFocus();
           }
           return KeyEventResult.handled;
         }
@@ -90,12 +92,15 @@ class _HomeScreenState extends State<HomeScreen> {
     ProfileAvatar.names.length,
     (_) => FocusNode(),
   );
+  final connectionTypeFocus = FocusNode(debugLabel: 'connection type');
   final form = GlobalKey<FormState>();
   final server = TextEditingController(),
       username = TextEditingController(),
       password = TextEditingController();
   // New accounts use the generic Xtream adapter; edits retain their adapter.
-  String get providerId => widget.editProfile?.config.providerId ?? 'xtream';
+  String providerId = 'xtream';
+  bool get isM3u => providerId == 'm3u';
+  List<int> get visibleFields => isM3u ? [0, 1] : [0, 1, 2, 3];
   final profileName = TextEditingController();
   int avatar = 0;
   @override
@@ -109,8 +114,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ? widget.session.profiles.last.config
             : null);
     if (config != null) {
-      server.text = config.server;
+      providerId = config.providerId;
       if (!widget.addAccountOnly || widget.editProfile != null) {
+        server.text = config.server;
         username.text = config.username;
         password.text = config.password;
       }
@@ -130,6 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final node in accountFields) {
       node.dispose();
     }
+    connectionTypeFocus.dispose();
     profileName.dispose();
     server.dispose();
     username.dispose();
@@ -145,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
     password.clear();
   }
 
-  Future<void> addAccount() async {
+  Future<void> addAccount({bool fromStartup = false}) async {
     final added = await Navigator.of(context).push<bool>(
       SmoothPageRoute<bool>(
         builder: (_) => HomeScreen(
@@ -155,12 +162,16 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
-    if (mounted && added == true) Navigator.of(context).pop();
+    if (mounted && added == true && !fromStartup) Navigator.of(context).pop();
   }
 
   Future<void> editAccount() async {
     final profile = widget.session.activeProfile;
     if (profile == null) return;
+    await editSavedProfile(profile);
+  }
+
+  Future<void> editSavedProfile(AccountProfile profile) async {
     await Navigator.of(context).push<bool>(
       SmoothPageRoute<bool>(
         builder: (_) => HomeScreen(
@@ -180,11 +191,12 @@ class _HomeScreenState extends State<HomeScreen> {
         ProviderConfig(
           providerId: providerId,
           server: server.text.trim(),
-          username: username.text.trim(),
-          password: password.text,
+          username: isM3u ? '' : username.text.trim(),
+          password: isM3u ? '' : password.text,
         ),
         name: profileName.text,
         avatar: avatar,
+        profileId: widget.editProfile!.id,
       );
       if (mounted && saved) Navigator.of(context).pop(true);
       return;
@@ -194,8 +206,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ProviderConfig(
         providerId: providerId,
         server: server.text.trim(),
-        username: username.text.trim(),
-        password: password.text,
+        username: isM3u ? '' : username.text.trim(),
+        password: isM3u ? '' : password.text,
       ),
       name: profileName.text,
       avatar: avatar,
@@ -265,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: ProfileAvatar(session.activeProfile!.avatar, size: 44),
                 onSelected: (value) {
                   if (value == 'edit') editAccount();
+                  if (value == 'switch') switchUser();
                 },
                 itemBuilder: (context) => [
                   PopupMenuItem<String>(
@@ -288,6 +301,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: ListTile(
                       leading: Icon(Icons.edit_outlined),
                       title: Text('Edit'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'switch',
+                    child: ListTile(
+                      leading: Icon(Icons.switch_account_outlined),
+                      title: Text('Switch account'),
                       contentPadding: EdgeInsets.zero,
                     ),
                   ),
@@ -358,14 +379,45 @@ class _HomeScreenState extends State<HomeScreen> {
                           ],
                         ),
                       ),
+                      const SizedBox(height: 6),
+                      Tooltip(
+                        message: 'Edit ${profile.name}',
+                        child: TextButton.icon(
+                          onPressed: () => editSavedProfile(profile),
+                          icon: const Icon(Icons.edit_outlined, size: 16),
+                          label: const Text('Edit'),
+                        ),
+                      ),
                     ],
+                  ),
+                ),
+              if (widget.session.profiles.length < 5)
+                SizedBox(
+                  width: 220,
+                  child: FocusCard(
+                    autofocus: widget.session.profiles.isEmpty,
+                    onTap: () => addAccount(fromStartup: true),
+                    child: const Column(
+                      children: [
+                        SizedBox.square(
+                          dimension: 160,
+                          child: Icon(
+                            Icons.person_add_alt_1_outlined,
+                            size: 64,
+                          ),
+                        ),
+                        SizedBox(height: 12),
+                        Text('Add profile', textAlign: TextAlign.center),
+                      ],
+                    ),
                   ),
                 ),
             ],
           ),
           if (widget.session.profiles.isEmpty)
-            const Text(
-              'No saved accounts. Open Settings to add your first account.',
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: Text('Add a profile to get started.'),
             ),
         ],
       ),
@@ -378,9 +430,9 @@ class _HomeScreenState extends State<HomeScreen> {
     username,
     password,
   ];
-  static const fieldLabels = [
+  List<String> get fieldLabels => [
     'Account name',
-    'Server URL',
+    isM3u ? 'M3U playlist URL' : 'Server URL',
     'Username',
     'Password',
   ];
@@ -507,7 +559,25 @@ class _HomeScreenState extends State<HomeScreen> {
       final wide = constraints.maxWidth >= 700;
       final fields = Column(
         mainAxisSize: MainAxisSize.min,
-        children: [for (var index = 0; index < 4; index++) accountField(index)],
+        children: [
+          DropdownButtonFormField<String>(
+            focusNode: connectionTypeFocus,
+            initialValue: isM3u ? 'm3u' : 'xtream',
+            decoration: const InputDecoration(
+              labelText: 'Connection type',
+              isDense: true,
+            ),
+            items: const [
+              DropdownMenuItem(value: 'xtream', child: Text('Xtream Codes')),
+              DropdownMenuItem(value: 'm3u', child: Text('M3U Playlist')),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => providerId = value);
+            },
+          ),
+          const SizedBox(height: 8),
+          for (final index in visibleFields) accountField(index),
+        ],
       );
       return Center(
         child: SingleChildScrollView(

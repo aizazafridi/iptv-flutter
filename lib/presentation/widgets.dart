@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../domain/models.dart';
@@ -170,11 +171,14 @@ class ChannelLogo extends StatelessWidget {
       ),
       child: uri == null
           ? const Icon(Icons.live_tv_rounded, size: 28)
-          : Image.network(
-              uri.toString(),
+          : CachedNetworkImage(
+              imageUrl: uri.toString(),
               fit: BoxFit.contain,
-              cacheWidth: 192,
-              errorBuilder: (_, _, _) =>
+              memCacheWidth: 128,
+              memCacheHeight: 128,
+              maxWidthDiskCache: 128,
+              maxHeightDiskCache: 128,
+              errorWidget: (_, _, _) =>
                   const Icon(Icons.live_tv_rounded, size: 28),
             ),
     ),

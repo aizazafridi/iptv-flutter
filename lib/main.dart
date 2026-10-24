@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -11,6 +12,11 @@ import 'presentation/focus_tooltips.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'Roboto',
+    ], await rootBundle.loadString('assets/fonts/OFL.txt'));
+  });
   FocusManager.instance.highlightStrategy =
       FocusHighlightStrategy.alwaysTraditional;
   runApp(const StreamlaneApp());
@@ -57,6 +63,7 @@ class _StreamlaneAppState extends State<StreamlaneApp> {
       },
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        fontFamily: 'Roboto',
         useMaterial3: true,
         brightness: appearance.brightness,
         scaffoldBackgroundColor: appearance.background,

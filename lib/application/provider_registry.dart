@@ -1,4 +1,5 @@
 import '../domain/iptv_provider.dart';
+import '../data/m3u/m3u_provider.dart';
 import 'watch_history.dart';
 import 'category_locks.dart';
 import '../data/locked_provider.dart';
@@ -13,10 +14,12 @@ class ProviderRegistry {
     'starshare': (config) =>
         ConfiguredXtreamProvider(config, name: 'Starshare'),
     'xtream': ConfiguredXtreamProvider.new,
+    'm3u': M3uProvider.new,
   };
   final Map<String, String> _labels = {
     'starshare': 'Starshare',
     'xtream': 'Xtream Codes',
+    'm3u': 'M3U Playlist',
   };
   Map<String, String> get options => Map.unmodifiable(_labels);
   void register(String id, String label, ProviderBuilder builder) {

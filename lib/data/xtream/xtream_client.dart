@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 import '../../domain/models.dart';
+import '../server_http_error.dart';
 
 /// Transport shared by Xtream-compatible providers. Replaceable in tests.
 class XtreamClient {
@@ -78,7 +79,7 @@ class XtreamClient {
     final response = await request.close();
     if (response.statusCode != 200) {
       await response.drain<void>();
-      throw ProviderException('Server returned HTTP ${response.statusCode}.');
+      throw serverHttpError(response.statusCode, service: 'Xtream API');
     }
     // Typed chunks avoid expanding a 50 MB response into hundreds of MB of ints.
     final buffer = BytesBuilder(copy: false);

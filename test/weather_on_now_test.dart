@@ -70,8 +70,9 @@ void main() {
     final service = WeatherService(
       fetch: (uri) async {
         final data = await fixture().get(uri);
-        if (data['current'] != null)
+        if (data['current'] != null) {
           (data['current'] as Map<String, dynamic>)['weather_code'] = 61;
+        }
         return data;
       },
     );

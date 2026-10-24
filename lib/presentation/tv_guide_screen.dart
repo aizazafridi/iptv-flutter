@@ -7,10 +7,28 @@ import 'activation_text_field.dart';
 import 'system_clock.dart';
 import 'widgets.dart';
 
-/// Guide rows request schedules only as they enter the viewport.
+const guidePixelsPerMinute = 4.0;
+double guideDurationWidth(Duration duration) =>
+    duration.inMilliseconds / 60000 * guidePixelsPerMinute;
+
 class TvGuideScreen extends StatefulWidget {
   final IptvProvider provider;
-  const TvGuideScreen({super.key, required this.provider});
+  final bool activePreview;
+  final ContentItem? previewChannel;
+  final bool previewLoading;
+  final Future<bool> Function(ContentItem)? onTune;
+  final VoidCallback? onWatchPreview;
+  final VoidCallback? onClose;
+  const TvGuideScreen({
+    super.key,
+    required this.provider,
+    this.activePreview = false,
+    this.previewChannel,
+    this.previewLoading = false,
+    this.onTune,
+    this.onWatchPreview,
+    this.onClose,
+  });
   @override
   State<TvGuideScreen> createState() => _TvGuideScreenState();
 }
@@ -19,18 +37,47 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
   late Future<List<ContentItem>> channels = load();
   final schedules = <String, Future<List<EpgProgramme>>>{};
   final controller = TextEditingController();
+  final horizontal = ScrollController();
+  final offset = ValueNotifier<double>(0);
+  final selection = ValueNotifier<(ContentItem, EpgProgramme)?>(null);
+  late final windowStart = DateTime.fromMillisecondsSinceEpoch(
+    DateTime.now().millisecondsSinceEpoch ~/ 1800000 * 1800000,
+    isUtc: true,
+  ).subtract(const Duration(minutes: 30));
+  late final windowEnd = windowStart.add(const Duration(hours: 6));
+  final timelineWidth = guideDurationWidth(const Duration(hours: 6));
+  late ContentItem? tunedChannel = widget.previewChannel;
+  bool tuning = false;
+  Future<void> tune(ContentItem channel) async {
+    if (tuning || widget.onTune == null) return;
+    setState(() => tuning = true);
+    try {
+      if (!await widget.onTune!(channel) || !mounted) return;
+      setState(() => tunedChannel = channel);
+      selection.value = null;
+      try {
+        final rows = await schedule(channel);
+        if (!mounted) return;
+        final programme = rows
+            .where((p) => p.isCurrent(DateTime.now()))
+            .firstOrNull;
+        if (programme != null) selection.value = (channel, programme);
+      } catch (_) {
+        /* Playing the channel does not require a guide. */
+      }
+    } finally {
+      if (mounted) setState(() => tuning = false);
+    }
+  }
+
   String query = '';
   Timer? clock;
-  int clockTicks = 0;
   @override
   void initState() {
     super.initState();
-    clock = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (mounted) {
-        setState(() {
-          if (++clockTicks % 4 == 0) schedules.clear();
-        });
-      }
+    horizontal.addListener(() => offset.value = horizontal.offset);
+    clock = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
     });
   }
 
@@ -38,6 +85,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
   void dispose() {
     clock?.cancel();
     controller.dispose();
+    horizontal.dispose();
+    offset.dispose();
+    selection.dispose();
     super.dispose();
   }
 
@@ -45,7 +95,7 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
     final locks = CategoryLocks.forProvider(widget.provider);
     await locks.load();
     final rows = await widget.provider.getAllItems(ContentType.live);
-    return rows
+    final visible = rows
         .where(
           (item) =>
               !locks.titleHidden(item) &&
@@ -59,220 +109,178 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                       )),
         )
         .toList();
+    // Promote the playing channel without changing the provider's remaining order.
+    final current = visible.indexWhere(
+      (item) => item.id == widget.previewChannel?.id,
+    );
+    if (current > 0) visible.insert(0, visible.removeAt(current));
+    return visible;
   }
 
   Future<List<EpgProgramme>> schedule(ContentItem item) =>
       schedules.putIfAbsent(item.id, () async {
         final p = widget.provider;
         if (p is! EpgProvider) return [];
-        final now = DateTime.now();
         final rows = await (p as EpgProvider).getEpg(item);
-        return rows.where((row) => row.end.isAfter(now)).take(8).toList();
+        return rows
+            .where(
+              (row) =>
+                  row.end.isAfter(windowStart) && row.start.isBefore(windowEnd),
+            )
+            .toList();
       });
+
   String time(DateTime value) =>
       MaterialLocalizations.of(context).formatTimeOfDay(
         TimeOfDay.fromDateTime(value.toLocal()),
         alwaysUse24HourFormat: true,
       );
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('TV Guide'),
-      actions: [
-        const SystemClock(),
-        IconButton(
-          tooltip: 'Refresh guide',
-          icon: const Icon(Icons.refresh),
-          onPressed: () => setState(() {
-            schedules.clear();
-            channels = load();
-          }),
-        ),
-      ],
+  void select(
+    ContentItem channel,
+    EpgProgramme programme,
+    double left,
+    double width,
+  ) {
+    selection.value = (channel, programme);
+    if (!horizontal.hasClients) return;
+    final viewport = horizontal.position.viewportDimension;
+    final target = left < horizontal.offset
+        ? left
+        : left + width > horizontal.offset + viewport
+        ? left + width - viewport
+        : horizontal.offset;
+    horizontal.animateTo(
+      target.clamp(0, horizontal.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOut,
+    );
+  }
+
+  Widget programmeDetails(ContentItem channel, EpgProgramme p) => AlertDialog(
+    title: Text(p.title),
+    content: SingleChildScrollView(
+      child: Text(
+        '${channel.name}\n${time(p.start)} - ${time(p.end)}\n\n${p.description}',
+      ),
     ),
-    body: Column(
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Close'),
+      ),
+    ],
+  );
+  Widget previewHeader() => SizedBox(
+    height: 136,
+    child: Row(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: ActivationTextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: 'Search channels',
-            ),
-            onChanged: (value) =>
-                setState(() => query = value.toLowerCase().trim()),
-          ),
-        ),
-        Expanded(
-          child: AsyncView(
-            future: channels,
-            retry: () => setState(() => channels = load()),
-            builder: (rows) {
-              final visible = rows
-                  .where((item) => item.name.toLowerCase().contains(query))
-                  .toList();
-              if (visible.isEmpty) {
-                return const Center(child: Text('No channels available'));
-              }
-              return ListView.builder(
-                itemCount: visible.length,
-                itemExtent: 84,
-                itemBuilder: (context, index) {
-                  final item = visible[index];
-                  return Container(
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: Colors.white.withValues(alpha: .12),
-                          width: .7,
-                        ),
-                      ),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 4,
-                    ),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 160,
-                          child: Text(
-                            item.name,
-                            maxLines: 3,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+        SizedBox(
+          width: (MediaQuery.sizeOf(context).width * .30).clamp(160, 350),
+          height: 136,
+          child: widget.activePreview
+              ? Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: widget.onWatchPreview,
+                    child: Tooltip(
+                      message: 'Watch channel fullscreen',
+                      child: Stack(
+                        children: [
+                          const Positioned.fill(child: SizedBox.expand()),
+                          if (widget.previewLoading || tuning)
+                            const Center(
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          const Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: Icon(
+                              Icons.fullscreen,
+                              color: Colors.white70,
+                              size: 20,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: FutureBuilder<List<EpgProgramme>>(
-                            future: schedule(item),
-                            builder: (context, snapshot) {
-                              if (snapshot.hasError) {
-                                return TextButton(
-                                  onPressed: () =>
-                                      setState(() => schedules.remove(item.id)),
-                                  child: const Text('Retry guide'),
-                                );
-                              }
-                              if (!snapshot.hasData) {
-                                return const Center(
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                );
-                              }
-                              final entries = snapshot.data!;
-                              if (entries.isEmpty) {
-                                return const Text(
-                                  'Programme guide unavailable',
-                                  style: TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 12,
-                                  ),
-                                );
-                              }
-                              return ListView.separated(
-                                scrollDirection: Axis.horizontal,
-                                itemCount: entries.length,
-                                separatorBuilder: (_, _) =>
-                                    const SizedBox(width: 24),
-                                itemBuilder: (context, index) {
-                                  final entry = entries[index];
-                                  final current = entry.isCurrent(
-                                    DateTime.now(),
-                                  );
-                                  final elapsed = current
-                                      ? DateTime.now()
-                                                .difference(entry.start)
-                                                .inMilliseconds /
-                                            entry.end
-                                                .difference(entry.start)
-                                                .inMilliseconds
-                                      : 0.0;
-                                  return SizedBox(
-                                    width: 230,
-                                    child: TextButton(
-                                      style: TextButton.styleFrom(
-                                        alignment: Alignment.topLeft,
-                                        backgroundColor: Colors.transparent,
-                                        shape: const RoundedRectangleBorder(),
-                                        side: BorderSide.none,
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 4,
-                                          vertical: 5,
-                                        ),
-                                      ),
-                                      onPressed: () => showDialog<void>(
-                                        context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: Text(entry.title),
-                                          content: SingleChildScrollView(
-                                            child: Text(
-                                              '${MaterialLocalizations.of(context).formatShortDate(entry.start.toLocal())}  ${time(entry.start)} - ${time(entry.end)}\n\n${entry.description}',
-                                            ),
-                                          ),
-                                          actions: [
-                                            TextButton(
-                                              onPressed: () =>
-                                                  Navigator.pop(context),
-                                              child: const Text('Close'),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '${current ? 'NOW  ' : ''}${time(entry.start)} - ${time(entry.end)}',
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              color: current
-                                                  ? Colors.lightBlueAccent
-                                                  : Colors.white54,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            entry.title,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          if (current) ...[
-                                            const SizedBox(height: 6),
-                                            LinearProgressIndicator(
-                                              value: elapsed.clamp(0.0, 1.0),
-                                              minHeight: 3,
-                                              color: Colors.lightBlueAccent,
-                                              backgroundColor: Colors.white12,
-                                              semanticsLabel:
-                                                  'Current programme progress',
-                                              semanticsValue:
-                                                  '${(elapsed * 100).round()}%',
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  );
-                },
+                  ),
+                )
+              : const ColoredBox(
+                  color: Color(0xff252c36),
+                  child: Center(
+                    child: Icon(
+                      Icons.tv_outlined,
+                      size: 32,
+                      color: Colors.white54,
+                    ),
+                  ),
+                ),
+        ),
+        const SizedBox(width: 18),
+        Expanded(
+          child: ValueListenableBuilder<(ContentItem, EpgProgramme)?>(
+            valueListenable: selection,
+            builder: (context, selected, _) {
+              if (selected == null) {
+                return Text(
+                  tunedChannel?.name ?? 'Select a programme',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                );
+              }
+              final (channel, p) = selected;
+              final now = DateTime.now();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${channel.name} - LIVE TV',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xff9bc7ff),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    p.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${time(p.start)} - ${time(p.end)}',
+                    style: const TextStyle(fontSize: 13, color: Colors.white60),
+                  ),
+                  if (p.isCurrent(now)) ...[
+                    const SizedBox(height: 7),
+                    LinearProgressIndicator(
+                      value:
+                          now.difference(p.start).inMilliseconds /
+                          p.end.difference(p.start).inMilliseconds,
+                      minHeight: 4,
+                      color: const Color(0xff529cff),
+                      backgroundColor: Colors.white24,
+                    ),
+                  ],
+                  const SizedBox(height: 7),
+                  Expanded(
+                    child: Text(
+                      p.description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white60,
+                      ),
+                    ),
+                  ),
+                ],
               );
             },
           ),
@@ -280,4 +288,400 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
       ],
     ),
   );
+  Widget timelineRow(ContentItem item) => Row(
+    children: [
+      Container(
+        width: 180,
+        height: 72,
+        margin: const EdgeInsets.only(right: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        color: const Color(0xff1d242c),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTune == null || tuning ? null : () => tune(item),
+            child: Row(
+              children: [
+                SizedBox.square(
+                  dimension: 36,
+                  child: ChannelLogo(item.artwork),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    item.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      Expanded(
+        child: FutureBuilder<List<EpgProgramme>>(
+          future: schedule(item),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return TextButton(
+                onPressed: () => setState(() {
+                  schedules.remove(item.id);
+                }),
+                child: const Text('Retry guide'),
+              );
+            }
+            if (!snapshot.hasData) {
+              return const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              );
+            }
+            final entries = snapshot.data!;
+            if (entries.isEmpty) {
+              return const Text(
+                'Programme guide unavailable',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              );
+            }
+            if (selection.value == null &&
+                (tunedChannel == null || tunedChannel!.id == item.id)) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted &&
+                    selection.value == null &&
+                    (tunedChannel == null || tunedChannel!.id == item.id)) {
+                  selection.value = (
+                    item,
+                    entries
+                            .where((e) => e.isCurrent(DateTime.now()))
+                            .firstOrNull ??
+                        entries.first,
+                  );
+                }
+              });
+            }
+            return ClipRect(
+              child: OverflowBox(
+                alignment: Alignment.topLeft,
+                minWidth: timelineWidth,
+                maxWidth: timelineWidth,
+                child: ValueListenableBuilder<double>(
+                  valueListenable: offset,
+                  builder: (context, x, _) => Transform.translate(
+                    offset: Offset(-x, 0),
+                    child: SizedBox(
+                      width: timelineWidth,
+                      height: 72,
+                      child: Stack(
+                        children: [
+                          for (final p in entries)
+                            if (p.end.isAfter(windowStart) &&
+                                p.start.isBefore(windowEnd))
+                              Positioned(
+                                left: guideDurationWidth(
+                                  p.start.difference(windowStart),
+                                ).clamp(0, timelineWidth),
+                                top: 0,
+                                bottom: 0,
+                                width: guideDurationWidth(
+                                  (p.end.isAfter(windowEnd) ? windowEnd : p.end)
+                                      .difference(
+                                        p.start.isBefore(windowStart)
+                                            ? windowStart
+                                            : p.start,
+                                      ),
+                                ),
+                                child: _ProgrammeCell(
+                                  key: ValueKey(
+                                    'programme:${item.id}:${p.title}',
+                                  ),
+                                  programme: p,
+                                  time: '${time(p.start)} - ${time(p.end)}',
+                                  onFocus: () => select(
+                                    item,
+                                    p,
+                                    guideDurationWidth(
+                                      p.start.difference(windowStart),
+                                    ).clamp(0, timelineWidth),
+                                    guideDurationWidth(
+                                      p.end.difference(p.start),
+                                    ),
+                                  ),
+                                  onTap: () => showDialog<void>(
+                                    context: context,
+                                    builder: (_) => programmeDetails(item, p),
+                                  ),
+                                ),
+                              ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ],
+  );
+  @override
+  Widget build(BuildContext context) => Theme(
+    data: Theme.of(context).copyWith(
+      textTheme: Theme.of(context).textTheme.apply(fontFamily: 'Roboto'),
+    ),
+    child: Scaffold(
+      backgroundColor: widget.activePreview
+          ? Colors.transparent
+          : const Color(0xff101419),
+      appBar: AppBar(
+        toolbarHeight: 48,
+        backgroundColor: const Color(0xff101419),
+        leading: BackButton(
+          onPressed: widget.onClose ?? () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'TV Guide',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        actions: [
+          const SystemClock(),
+          IconButton(
+            tooltip: 'Refresh guide',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() {
+              schedules.clear();
+              channels = load();
+            }),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: previewHeader(),
+          ),
+          Expanded(
+            child: ColoredBox(
+              color: const Color(0xff101419),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  children: [
+                    const Divider(color: Colors.white24, height: 1),
+                    SizedBox(
+                      height: 48,
+                      child: Row(
+                        children: [
+                          const Text(
+                            'TV GUIDE',
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: Color(0xff9bc7ff),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(width: 20),
+                          Expanded(
+                            child: ActivationTextField(
+                              controller: controller,
+                              decoration: const InputDecoration(
+                                hintText: 'Search channels',
+                                isDense: true,
+                                border: InputBorder.none,
+                              ),
+                              onChanged: (value) => setState(
+                                () => query = value.toLowerCase().trim(),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      height: 36,
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 183,
+                            alignment: Alignment.centerLeft,
+                            padding: const EdgeInsets.only(left: 12),
+                            color: const Color(0xff29313c),
+                            child: const Text(
+                              'CHANNEL',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              controller: horizontal,
+                              scrollDirection: Axis.horizontal,
+                              child: SizedBox(
+                                width: timelineWidth,
+                                child: Row(
+                                  children: [
+                                    for (var i = 0; i < 12; i++)
+                                      Container(
+                                        width: 120,
+                                        height: 36,
+                                        alignment: Alignment.centerLeft,
+                                        padding: const EdgeInsets.only(
+                                          left: 10,
+                                        ),
+                                        decoration: const BoxDecoration(
+                                          color: Color(0xff29313c),
+                                          border: Border(
+                                            left: BorderSide(
+                                              color: Color(0xff101419),
+                                              width: 2,
+                                            ),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          time(
+                                            windowStart.add(
+                                              Duration(minutes: i * 30),
+                                            ),
+                                          ),
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: AsyncView(
+                        future: channels,
+                        retry: () => setState(() {
+                          channels = load();
+                        }),
+                        builder: (rows) {
+                          final visible = rows
+                              .where(
+                                (item) =>
+                                    item.name.toLowerCase().contains(query),
+                              )
+                              .toList();
+                          if (visible.isEmpty) {
+                            return const Center(
+                              child: Text('No channels available'),
+                            );
+                          }
+                          return ListView.builder(
+                            itemExtent: 75,
+                            itemCount: visible.length,
+                            itemBuilder: (context, index) =>
+                                timelineRow(visible[index]),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _ProgrammeCell extends StatefulWidget {
+  final EpgProgramme programme;
+  final String time;
+  final VoidCallback onFocus, onTap;
+  const _ProgrammeCell({
+    super.key,
+    required this.programme,
+    required this.time,
+    required this.onFocus,
+    required this.onTap,
+  });
+  @override
+  State<_ProgrammeCell> createState() => _ProgrammeCellState();
+}
+
+class _ProgrammeCellState extends State<_ProgrammeCell> {
+  bool focused = false;
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.programme;
+    final now = DateTime.now();
+    return Padding(
+      padding: const EdgeInsets.only(right: 3),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: focused ? const Color(0xffe8edf3) : const Color(0xff232a32),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            onFocusChange: (value) {
+              setState(() => focused = value);
+              if (value) widget.onFocus();
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    p.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: focused ? Colors.black87 : Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    widget.time,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: focused ? Colors.black54 : Colors.white54,
+                    ),
+                  ),
+                  if (p.isCurrent(now)) ...[
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(
+                      value:
+                          now.difference(p.start).inMilliseconds /
+                          p.end.difference(p.start).inMilliseconds,
+                      minHeight: 3,
+                      color: const Color(0xff529cff),
+                      backgroundColor: Colors.white24,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

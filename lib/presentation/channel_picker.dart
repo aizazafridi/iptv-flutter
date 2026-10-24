@@ -1,4 +1,5 @@
 import '../application/category_locks.dart';
+import 'live_channel_browser.dart';
 import 'package:flutter/material.dart';
 import 'compact_player_panel_theme.dart';
 import '../domain/models.dart';
@@ -8,6 +9,7 @@ import 'widgets.dart';
 class ChannelPicker extends StatefulWidget {
   final String title;
   final bool categoriesFirst;
+  final bool liveBrowser;
   final bool embedded;
   final VoidCallback? onClose;
   final String? currentId, categoryId;
@@ -19,6 +21,7 @@ class ChannelPicker extends StatefulWidget {
     required this.title,
     required this.load,
     this.categoriesFirst = false,
+    this.liveBrowser = false,
     this.embedded = false,
     this.onClose,
     this.currentId,
@@ -176,6 +179,15 @@ class _ChannelPickerState extends State<ChannelPicker> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.liveBrowser) {
+      return LiveChannelBrowser(
+        load: widget.load,
+        provider: widget.provider,
+        currentId: widget.currentId,
+        categoryId: widget.categoryId,
+        onSelect: widget.onSelect,
+      );
+    }
     final panel = Container(
       width: widget.embedded ? double.infinity : 280,
       padding: const EdgeInsets.all(8),

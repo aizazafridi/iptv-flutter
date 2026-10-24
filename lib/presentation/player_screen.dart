@@ -1,3 +1,5 @@
+import 'live_tv_controls.dart';
+import 'system_clock.dart';
 import '../data/last_live_channel.dart';
 import 'channel_list_icon.dart';
 import 'live_health_indicator.dart';
@@ -36,6 +38,7 @@ import '../playback/live_stream_recovery.dart';
 import '../playback/media_kit_engine.dart';
 
 class PlayerScreen extends StatefulWidget {
+  final bool liveTvMode, initialChannelPicker, initialGuide;
   final PlaybackSource source;
   final IptvProvider? provider;
   final String channelCategory;
@@ -54,6 +57,9 @@ class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
     required this.source,
+    this.liveTvMode = false,
+    this.initialChannelPicker = false,
+    this.initialGuide = false,
     this.provider,
     this.channelCategory = 'Channels',
     this.loadChannels,
@@ -148,6 +154,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!mounted ||
         event is KeyUpEvent ||
         showAutoNext ||
+        guideVisible ||
         ModalRoute.of(context)?.isCurrent != true) {
       return false;
     }
@@ -161,6 +168,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       LogicalKeyboardKey.arrowRight,
     ].contains(key)) {
       return false;
+    }
+    if (liveTvMode && source.isLive && !controlsVisible) {
+      if (key == LogicalKeyboardKey.arrowUp ||
+          key == LogicalKeyboardKey.arrowDown) {
+        unawaited(zapChannel(key == LogicalKeyboardKey.arrowUp ? -1 : 1));
+        return true;
+      }
+      if (key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        unawaited(compactChannels());
+        return true;
+      }
     }
     if (source.isLive && liveSurfaceFocus.hasPrimaryFocus) {
       revealControls();
@@ -176,6 +195,80 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     revealControls();
     return false;
+  }
+
+  bool expandedFromGuide = false;
+  bool get liveTvMode => widget.liveTvMode || expandedFromGuide;
+  void watchGuidePreview() {
+    setState(() {
+      expandedFromGuide = true;
+      fullscreen = true;
+      guideVisible = false;
+      controlsVisible = false;
+    });
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+    );
+    liveSurfaceFocus.requestFocus();
+  }
+
+  bool guideVisible = false;
+  bool zapping = false;
+  Future<void> zapChannel(int direction) async {
+    if (zapping || switchingChannel || widget.loadChannels == null) return;
+    zapping = true;
+    try {
+      final rows = await widget.loadChannels!();
+      if (!mounted || rows.isEmpty) return;
+      final current = rows.indexWhere(
+        (item) => item.id == (liveChannel ?? widget.item)?.id,
+      );
+      for (var step = 1; step <= rows.length; step++) {
+        final item = rows[(current + direction * step) % rows.length];
+        if (await switchLiveChannel(item)) break;
+      }
+    } finally {
+      zapping = false;
+    }
+  }
+
+  Future<void> compactChannels() async {
+    if (widget.loadChannels == null) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+        height: 130,
+        padding: const EdgeInsets.all(16),
+        color: Colors.black87,
+        child: LiveChannelStrip(
+          load: widget.loadChannels!,
+          currentId: (liveChannel ?? widget.item)?.id,
+          autofocus: true,
+          onSelect: (item) async {
+            if (await switchLiveChannel(item) && sheetContext.mounted) {
+              Navigator.pop(sheetContext);
+            }
+          },
+        ),
+      ),
+    );
+    if (mounted) {
+      setState(() => controlsVisible = false);
+      liveSurfaceFocus.requestFocus();
+    }
+  }
+
+  void closeGuide() {
+    setState(() {
+      guideVisible = false;
+      if (liveTvMode) controlsVisible = false;
+    });
+    if (!liveTvMode) {
+      revealControls();
+    } else {
+      liveSurfaceFocus.requestFocus();
+    }
   }
 
   bool showAutoNext = false;
@@ -362,10 +455,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   ContentItem? liveChannel;
   bool switchingChannel = false;
   Future<void> chooseChannel() async {
+    if (widget.loadChannels == null) return;
+    if (liveTvMode) setState(() => controlsVisible = false);
     await showDialog<void>(
       context: context,
       barrierColor: Colors.transparent,
       builder: (_) => ChannelPicker(
+        liveBrowser: true,
         title: widget.channelCategory,
         load: widget.loadChannels!,
         currentId: (liveChannel ?? widget.item)?.id,
@@ -375,12 +471,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
     if (mounted) {
-      revealControls();
+      if (!liveTvMode) {
+        revealControls();
+      } else {
+        setState(() => controlsVisible = false);
+      }
       liveSurfaceFocus.requestFocus();
     }
   }
 
   Future<bool> switchLiveChannel(ContentItem selected) async {
+    final keepHidden = liveTvMode && !controlsVisible;
     if (widget.provider != null &&
         !await requestTitleAccess(context, widget.provider!, selected)) {
       return false;
@@ -388,7 +489,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!mounted) return false;
     setState(() => switchingChannel = true);
     try {
-      final next = await widget.resolveChannel!(selected);
+      final next =
+          await (widget.resolveChannel?.call(selected) ??
+              widget.provider!.resolvePlayback(selected));
       if (!mounted) return false;
       await liveRecovery?.close();
       await finishLiveRecording();
@@ -420,7 +523,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     } finally {
       if (mounted) {
         setState(() => switchingChannel = false);
-        revealControls();
+        if (!keepHidden) revealControls();
       }
     }
     return false;
@@ -651,12 +754,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> showEpg() async {
     if (widget.provider != null) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => TvGuideScreen(provider: widget.provider!),
-        ),
-      );
-      if (mounted) revealControls();
+      controlsTimer?.cancel();
+      setState(() {
+        guideVisible = true;
+        controlsVisible = false;
+      });
       return;
     }
     await showDialog<void>(
@@ -794,6 +896,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    guideVisible = widget.initialGuide;
+    if (liveTvMode) {
+      fullscreen = true;
+      controlsVisible = false;
+    }
     engine = widget.engineFactory?.call() ?? MediaKitEngine();
     videoSurface = RepaintBoundary(child: engine.surface());
     setupVideoRecorder();
@@ -934,11 +1041,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       const Duration(seconds: 10),
       (_) => unawaited(saveProgress()),
     );
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    revealControls();
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(
+        liveTvMode ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      ),
+    );
+    if (!liveTvMode) revealControls();
     if (source.isLive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) liveSurfaceFocus.requestFocus();
+        if (mounted) {
+          liveSurfaceFocus.requestFocus();
+          if (widget.initialChannelPicker) unawaited(chooseChannel());
+        }
       });
     }
     start();
@@ -1263,12 +1377,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  bool exitingPlayer = false;
+  Future<void> exitPlayer() async {
+    if (exitingPlayer || !mounted) return;
+    controlsTimer?.cancel();
+    setState(() => exitingPlayer = true);
+    // Let PopScope enable popping before the explicit Back action.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await Navigator.of(context).maybePop();
+    if (mounted) setState(() => exitingPlayer = false);
+  }
+
+  void handlePlayerBack() {
+    if (guideVisible) {
+      closeGuide();
+    } else if (showAutoNext) {
+      cancelAutoNext();
+    } else if (controlsVisible) {
+      controlsTimer?.cancel();
+      setState(() => controlsVisible = false);
+      if (source.isLive) liveSurfaceFocus.requestFocus();
+    } else {
+      unawaited(exitPlayer());
+    }
+  }
+
+  bool liveMuted = false;
+
   void revealControls() {
+    if (guideVisible) return;
     controlsTimer?.cancel();
     if (!controlsVisible) setState(() => controlsVisible = true);
-    if (!fullscreen) return;
-    controlsTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && fullscreen) setState(() => controlsVisible = false);
+    if (!fullscreen && !source.isLive) return;
+    controlsTimer = Timer(Duration(seconds: source.isLive ? 15 : 3), () {
+      if (mounted && (fullscreen || source.isLive)) {
+        setState(() => controlsVisible = false);
+      }
     });
   }
 
@@ -1281,13 +1426,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: !controlsVisible && !showAutoNext,
+    canPop:
+        exitingPlayer || (!controlsVisible && !showAutoNext && !guideVisible),
     onPopInvokedWithResult: (didPop, result) {
       if (didPop) {
         // Capture progress before shutdown events and before the details page resumes.
         progressTimer?.cancel();
         unawaited(saveProgress());
         skipFinalProgressSave = true;
+      } else if (guideVisible) {
+        closeGuide();
       } else if (showAutoNext) {
         cancelAutoNext();
       } else {
@@ -1304,21 +1452,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
             seek(position + Duration(seconds: seekSeconds)),
         const SingleActivator(LogicalKeyboardKey.mediaRewind): () =>
             seek(position - Duration(seconds: seekSeconds)),
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (controlsVisible) {
-            controlsTimer?.cancel();
-            setState(() => controlsVisible = false);
-          } else {
-            Navigator.of(context).pop();
-          }
-        },
+        const SingleActivator(LogicalKeyboardKey.escape): handlePlayerBack,
+        const SingleActivator(LogicalKeyboardKey.goBack): handlePlayerBack,
       },
       child: Focus(
         focusNode: liveSurfaceFocus,
         canRequestFocus: source.isLive,
         child: Scaffold(
           backgroundColor: const Color(0xff090b13),
-          appBar: fullscreen || !controlsVisible
+          appBar: fullscreen || !controlsVisible || guideVisible
               ? null
               : AppBar(
                   leading: BackButton(
@@ -1344,15 +1486,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      MouseRegion(
-                        onHover: (_) => revealControls(),
-                        cursor: fullscreen && !controlsVisible
-                            ? SystemMouseCursors.none
-                            : MouseCursor.defer,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: revealControls,
-                          child: videoSurface,
+                      Positioned(
+                        left: guideVisible ? 16 : 0,
+                        top: guideVisible
+                            ? MediaQuery.paddingOf(context).top + 60
+                            : 0,
+                        right: guideVisible ? null : 0,
+                        bottom: guideVisible ? null : 0,
+                        width: guideVisible
+                            ? (MediaQuery.sizeOf(context).width * .30).clamp(
+                                160,
+                                350,
+                              )
+                            : null,
+                        height: guideVisible ? 136 : null,
+                        child: MouseRegion(
+                          onHover: (_) => revealControls(),
+                          cursor: fullscreen && !controlsVisible
+                              ? SystemMouseCursors.none
+                              : MouseCursor.defer,
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: revealControls,
+                            child: videoSurface,
+                          ),
                         ),
                       ),
                       if (videoRecorder?.recording == true)
@@ -1446,7 +1603,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ],
                   ),
                 ),
-                if (controlsVisible)
+                if (controlsVisible && !liveTvMode)
                   Positioned(
                     bottom: 0,
                     left: 0,
@@ -2140,6 +2297,130 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         }
                       },
                       onCancel: cancelAutoNext,
+                    ),
+                  ),
+                if (liveTvMode && controlsVisible && !guideVisible) ...[
+                  Positioned(
+                    top: 18,
+                    left: 24,
+                    right: 24,
+                    child: Row(
+                      children: [
+                        IconButton(
+                          tooltip: 'Back to dashboard',
+                          onPressed: exitPlayer,
+                          icon: const Icon(
+                            Icons.arrow_back,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            widget.channelCategory,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                        const SystemClock(),
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: Focus(
+                      canRequestFocus: false,
+                      onKeyEvent: liveControlKeys,
+                      child: FocusTraversalGroup(
+                        policy: ReadingOrderTraversalPolicy(),
+                        child: LiveTvControls(
+                          key: ValueKey((liveChannel ?? widget.item)?.id),
+                          channel: liveChannel ?? widget.item,
+                          title: source.title,
+                          provider: widget.provider,
+                          loadGuide: () =>
+                              widget.channelEpg != null &&
+                                  (liveChannel ?? widget.item) != null
+                              ? widget.channelEpg!(liveChannel ?? widget.item!)
+                              : widget.loadEpg?.call() ??
+                                    Future.value(<EpgProgramme>[]),
+                          loadChannels: widget.loadChannels,
+                          onSwitch: (item) async {
+                            await switchLiveChannel(item);
+                          },
+                          onChannels: chooseChannel,
+                          onGuide: showEpg,
+                          onActivity: revealControls,
+                          onOverlayOpened: () => controlsTimer?.cancel(),
+                          onAspect: engine is VideoDisplayEngine
+                              ? () async {
+                                  controlsTimer?.cancel();
+                                  await showDialog<void>(
+                                    context: context,
+                                    builder: (_) => VideoDisplayDialog(
+                                      engine: engine as VideoDisplayEngine,
+                                    ),
+                                  );
+                                  await savePlaybackPreferences();
+                                  if (mounted) revealControls();
+                                }
+                              : null,
+                          muted: liveMuted,
+                          onVolume: engine is AudioPlaybackEngine
+                              ? () async {
+                                  final muted = !liveMuted;
+                                  await (engine as AudioPlaybackEngine)
+                                      .setVolume(muted ? 0 : 100);
+                                  if (mounted) {
+                                    setState(() => liveMuted = muted);
+                                  }
+                                }
+                              : null,
+                          onRecord:
+                              videoRecorder == null ||
+                                  videoRecorder!.busy ||
+                                  starting ||
+                                  switchingChannel
+                              ? null
+                              : toggleFileRecording,
+                          onCatchUp: catchUpSupported ? showCatchUp : null,
+                          onSplit:
+                              widget.loadChannels != null &&
+                                  widget.resolveChannel != null &&
+                                  engine is AudioPlaybackEngine
+                              ? openSplitScreen
+                              : null,
+                          health: LiveHealthIndicator(
+                            position: position,
+                            playing: playing,
+                            starting: starting,
+                            buffering: buffering,
+                            reconnecting: reconnectingLive,
+                          ),
+                          playing: playing,
+                          recording: videoRecorder?.recording ?? false,
+                          primaryFocus: playPauseFocus,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (guideVisible && widget.provider != null)
+                  Positioned.fill(
+                    child: TvGuideScreen(
+                      provider: widget.provider!,
+                      activePreview: true,
+                      previewChannel: liveChannel ?? widget.item,
+                      previewLoading: starting || buffering || reconnectingLive,
+                      onTune: switchLiveChannel,
+                      onWatchPreview: watchGuidePreview,
+                      onClose: () {
+                        closeGuide();
+                      },
                     ),
                   ),
               ],

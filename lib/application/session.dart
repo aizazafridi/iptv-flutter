@@ -185,8 +185,12 @@ class Session extends ChangeNotifier {
     ProviderConfig config, {
     required String name,
     required int avatar,
+    String? profileId,
   }) async {
-    final original = activeProfile;
+    final original = profileId == null
+        ? activeProfile
+        : profiles.where((p) => p.id == profileId).firstOrNull;
+    final editingActive = original != null && activeProfile?.id == original.id;
     if (original == null || loading) return false;
     if (name.trim().isEmpty) {
       error = 'Enter an account name.';
@@ -206,7 +210,7 @@ class Session extends ChangeNotifier {
           old.username != configured.username ||
           old.password != configured.password;
       Account? result;
-      if (changed) {
+      if (changed && editingActive) {
         candidate = registry.create(configured);
         result = await candidate.connect();
       }
@@ -229,8 +233,8 @@ class Session extends ChangeNotifier {
         return false;
       }
       profiles = saved;
-      activeProfile = updated;
-      lastConfig = configured;
+      if (editingActive) activeProfile = updated;
+      if (editingActive || activeProfile == null) lastConfig = configured;
       if (candidate != null) {
         provider?.dispose();
         provider = candidate;
