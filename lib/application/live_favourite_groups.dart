@@ -20,6 +20,7 @@ class LiveFavouriteGroups extends ChangeNotifier {
       _instances[provider] ??= LiveFavouriteGroups(
         WatchHistory.forProvider(provider).scope,
       );
+  String selectedGroup = all;
   final String scope;
   final FlutterSecureStorage storage;
   LiveFavouriteGroups(
@@ -88,7 +89,12 @@ class LiveFavouriteGroups extends ChangeNotifier {
         'Use a group name between 1 and 40 characters.',
       );
     }
-    if (['all channels', 'ungrouped'].contains(name.toLowerCase()) ||
+    if ([
+          'all channels',
+          'all favorites',
+          'all favourites',
+          'ungrouped',
+        ].contains(name.toLowerCase()) ||
         _groups.any(
           (group) =>
               group.id != except &&
@@ -100,11 +106,11 @@ class LiveFavouriteGroups extends ChangeNotifier {
   }
 
   String name(String id) => id == all
-      ? 'All channels'
+      ? 'All Favorites'
       : id == ungrouped
       ? 'Ungrouped'
       : _groups.where((group) => group.id == id).firstOrNull?.name ??
-            'All channels';
+            'All Favorites';
   bool exists(String id) =>
       id == all || id == ungrouped || _groups.any((group) => group.id == id);
   Future<String> create(String input) => _change(() {
@@ -165,10 +171,12 @@ class LiveFavouriteGroups extends ChangeNotifier {
             ?.channels
             .toSet() ??
         <String>{};
+    final seen = <String>{};
     final rows = favourites
         .where(
           (item) =>
               item.type == ContentType.live &&
+              seen.add(item.id) &&
               (id == all ||
                   (id == ungrouped
                       ? !assigned.contains(item.id)

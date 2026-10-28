@@ -5,7 +5,13 @@ import '../domain/models.dart';
 class ProfileAvatar extends StatelessWidget {
   final int index;
   final double size;
-  const ProfileAvatar(this.index, {super.key, this.size = 72});
+  final bool roundedSquare;
+  const ProfileAvatar(
+    this.index, {
+    super.key,
+    this.size = 72,
+    this.roundedSquare = false,
+  });
   static const names = [
     'Cinema portrait 1',
     'Cinema portrait 2',
@@ -29,6 +35,10 @@ class ProfileAvatar extends StatelessWidget {
     (width: 1376.0, height: 768.0, x: 400.0, y: 0.0, side: 640.0),
   ];
 
+  Widget clip(Widget child) => roundedSquare
+      ? ClipRRect(borderRadius: BorderRadius.circular(16), child: child)
+      : ClipOval(child: child);
+
   Widget photo(int selected) {
     final index = selected;
     final crop = _photos[index];
@@ -39,8 +49,8 @@ class ProfileAvatar extends StatelessWidget {
       child: SizedBox(
         width: size,
         height: size,
-        child: ClipOval(
-          child: Stack(
+        child: clip(
+          Stack(
             children: [
               Positioned(
                 left: -crop.x * scale,

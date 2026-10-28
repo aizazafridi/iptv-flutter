@@ -13,11 +13,13 @@ class MediaKitEngine
     implements
         PlaybackEngine,
         AudioPlaybackEngine,
+        AudioTrackPlaybackEngine,
         CompletionPlaybackEngine,
         VideoRecordingEngine,
         BufferingPlaybackEngine,
         FramePreviewEngine,
         SubtitleCustomizationEngine,
+        SubtitleOverlayAvoidanceEngine,
         VideoDisplayEngine {
   @override
   Stream<bool> get completed => _player.stream.completed;
@@ -54,6 +56,12 @@ class MediaKitEngine
   VideoDisplay get videoDisplay => _display.value;
   @override
   void setVideoDisplay(VideoDisplay display) => _display.value = display;
+  final _subtitleInset = ValueNotifier<double>(0);
+  @override
+  void setSubtitleBottomInset(double inset) {
+    if (!_disposed) _subtitleInset.value = inset;
+  }
+
   final _subtitleStyle = ValueNotifier(const SubtitleAppearance());
   final Map<String, String> _subtitleNames = {};
   @override
@@ -161,12 +169,61 @@ class MediaKitEngine
         : _player.state.tracks.subtitle.firstWhere((track) => track.id == id),
   );
   @override
+  List<SubtitleOption> get currentAudioTracks => _player.state.tracks.audio
+      .where((track) => track.id != 'no' && track.id != 'auto')
+      .map(
+        (track) => SubtitleOption(
+          track.id,
+          [track.title, track.language]
+                  .whereType<String>()
+                  .where((value) => value.isNotEmpty)
+                  .join(' ? ')
+                  .isEmpty
+              ? 'Audio ${track.id}'
+              : [track.title, track.language]
+                    .whereType<String>()
+                    .where((value) => value.isNotEmpty)
+                    .join(' ? '),
+        ),
+      )
+      .toList();
+  @override
+  Stream<List<SubtitleOption>> get audioTracks =>
+      _player.stream.tracks.map((_) => currentAudioTracks);
+  @override
+  String get selectedAudioTrack => _player.state.track.audio.id;
+  @override
+  Future<void> selectAudioTrack(String id) => _player.setAudioTrack(
+    id == 'auto'
+        ? AudioTrack.auto()
+        : _player.state.tracks.audio.firstWhere((track) => track.id == id),
+  );
+  @override
   Future<void> addSubtitle(Uri uri) =>
       _player.setSubtitleTrack(SubtitleTrack.uri(uri.toString()));
   @override
   Future<void> open(PlaybackSource source) async {
     await _capture.stop();
     _source = source;
+    final native = _player.platform;
+    if (native is NativePlayer && source.isLive) {
+      // Keep live jitter buffering bounded for Fire TV memory and live latency.
+      final properties = <String, String>{
+        'cache': 'yes',
+        'cache-secs': '15',
+        'cache-pause-wait': '3',
+        'network-timeout': '15',
+        'demuxer-max-bytes': '${32 * 1024 * 1024}',
+        'demuxer-max-back-bytes': '${8 * 1024 * 1024}',
+      };
+      for (final property in properties.entries) {
+        try {
+          await native.setProperty(property.key, property.value);
+        } catch (_) {
+          /* Unsupported options must not prevent playback. */
+        }
+      }
+    }
     await _player.open(
       Media(source.uri.toString(), httpHeaders: source.headers),
     );
@@ -188,6 +245,7 @@ class MediaKitEngine
     await _capture.stop();
     await _preview?.dispose();
     await _player.dispose();
+    _subtitleInset.dispose();
     _subtitleStyle.dispose();
     _display.dispose();
   }
@@ -222,20 +280,32 @@ class MediaKitEngine
           child: StreamBuilder<List<String>>(
             stream: _player.stream.subtitle,
             initialData: _player.state.subtitle,
-            builder: (_, snapshot) => Align(
-              alignment: appearance.alignment,
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  (snapshot.data ?? [])
-                      .where((line) => line.trim().isNotEmpty)
-                      .join('\n'),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: appearance.size,
-                    color: SubtitleAppearance.colors[appearance.color],
-                    backgroundColor: Colors.black54,
-                    shadows: const [Shadow(color: Colors.black, blurRadius: 3)],
+            builder: (_, snapshot) => ValueListenableBuilder<double>(
+              valueListenable: _subtitleInset,
+              builder: (_, inset, _) => Align(
+                alignment: appearance.alignment,
+                child: AnimatedPadding(
+                  duration: const Duration(milliseconds: 170),
+                  curve: Curves.easeOut,
+                  padding: EdgeInsets.fromLTRB(
+                    24,
+                    24,
+                    24,
+                    24 + (appearance.position == 'Bottom' ? inset : 0),
+                  ),
+                  child: Text(
+                    (snapshot.data ?? [])
+                        .where((line) => line.trim().isNotEmpty)
+                        .join('\n'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: appearance.size,
+                      color: SubtitleAppearance.colors[appearance.color],
+                      backgroundColor: Colors.black54,
+                      shadows: const [
+                        Shadow(color: Colors.black, blurRadius: 3),
+                      ],
+                    ),
                   ),
                 ),
               ),

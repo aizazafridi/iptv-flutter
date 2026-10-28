@@ -10,12 +10,14 @@ import 'widgets.dart';
 class CatalogSearchScreen extends StatefulWidget {
   final IptvProvider provider;
   final ContentType type;
+  final Future<List<ContentItem>>? initialCatalog;
   final Future<void> Function(ContentItem)? onOpen;
   const CatalogSearchScreen({
     super.key,
     required this.provider,
     required this.type,
     this.onOpen,
+    this.initialCatalog,
   });
   @override
   State<CatalogSearchScreen> createState() => _CatalogSearchScreenState();
@@ -29,7 +31,7 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
   void initState() {
     super.initState();
     // Load once per search visit, then filter locally without repeated API calls.
-    catalog = widget.provider.getAllItems(widget.type);
+    catalog = widget.initialCatalog ?? widget.provider.getAllItems(widget.type);
   }
 
   @override

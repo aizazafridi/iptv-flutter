@@ -52,7 +52,7 @@ class ProfileLoadingState extends State<ProfileLoading>
       await progress
           .animateTo(
             1,
-            duration: const Duration(milliseconds: 700),
+            duration: const Duration(milliseconds: 300),
             curve: Curves.easeInOutCubic,
           )
           .orCancel;
@@ -73,7 +73,7 @@ class ProfileLoadingState extends State<ProfileLoading>
   Widget build(BuildContext context) => Center(
     child: TweenAnimationBuilder<Offset>(
       tween: Tween(begin: widget.origin, end: Offset.zero),
-      duration: const Duration(milliseconds: 1100),
+      duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutSine,
       onEnd: () {
         if (!motionFinished.isCompleted) motionFinished.complete();
@@ -85,7 +85,11 @@ class ProfileLoadingState extends State<ProfileLoading>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ProfileAvatar(widget.profile.avatar, size: 160),
+            ProfileAvatar(
+              widget.profile.avatar,
+              size: 150,
+              roundedSquare: true,
+            ),
             const SizedBox(height: 12),
             Text(
               widget.profile.name,

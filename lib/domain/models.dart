@@ -55,6 +55,8 @@ class ContentItem {
 
   /// Provider added timestamp; series may fall back to last modification.
   final DateTime? addedAt;
+  final double? rating;
+  final int? releaseYear;
   const ContentItem({
     required this.id,
     required this.name,
@@ -63,13 +65,18 @@ class ContentItem {
     this.extension,
     this.categoryId,
     this.addedAt,
+    this.rating,
+    this.releaseYear,
   });
 }
 
 class MediaDetails {
   final ContentItem item;
   final String synopsis, genre, cast, director, rating, releaseDate, duration;
-  final Uri? artwork;
+  final Uri? artwork, backdrop, trailer;
+  final String ageRating, language;
+  final int? tmdbId;
+  final String? imdbId;
   const MediaDetails({
     required this.item,
     required this.synopsis,
@@ -79,12 +86,19 @@ class MediaDetails {
     this.rating = '',
     this.releaseDate = '',
     this.duration = '',
+    this.tmdbId,
+    this.imdbId,
+    this.ageRating = '',
+    this.language = '',
+    this.backdrop,
+    this.trailer,
     this.artwork,
   });
 }
 
 class Episode {
   final String id, title, extension;
+  final String synopsis, duration, airDate;
   final Uri? artwork;
   final int season, number;
   const Episode({
@@ -93,6 +107,9 @@ class Episode {
     required this.season,
     required this.number,
     required this.extension,
+    this.synopsis = '',
+    this.duration = '',
+    this.airDate = '',
     this.artwork,
   });
 }

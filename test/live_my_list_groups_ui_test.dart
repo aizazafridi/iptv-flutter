@@ -55,7 +55,7 @@ void main() {
       await tester.tap(find.text('Choose groups'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Sports'));
-      await tester.tap(find.text('Save'));
+      await tester.tap(find.text('Save Changes'));
       await tester.pumpAndSettle();
       expect(groups.memberships('3'), {sports});
       expect(find.byType(DropdownButtonFormField<String>), findsNothing);
@@ -109,6 +109,8 @@ void main() {
       await tester.tap(find.byTooltip('Manage groups'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Delete News'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
       await tester.pumpAndSettle();
       expect(groups.groups, isEmpty);
       await tester.tap(find.text('Done'));

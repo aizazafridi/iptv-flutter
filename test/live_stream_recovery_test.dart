@@ -72,7 +72,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(find.text('Reconnecting channel...'), findsNothing);
-      await tester.tap(find.byTooltip('Pause'));
+      await tester.tap(find.byIcon(Icons.pause));
       await tester.pump();
       expect(engine.pauses, 1);
       await tester.pump(const Duration(seconds: 60));
@@ -98,6 +98,9 @@ void main() {
       recovery.failed();
       await tester.pump(const Duration(seconds: 2));
       expect(opens, 1);
+      await tester.pump(const Duration(seconds: 29));
+      expect(opens, 1); // Do not reopen while the new connection is buffering.
+      await tester.pump(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 4));
       expect(opens, 2);
       recovery.progress(const Duration(seconds: 2));
@@ -141,7 +144,7 @@ void main() {
         onRecovering: (_) {},
       );
       recovery.progress(const Duration(seconds: 1));
-      await tester.pump(const Duration(seconds: 13));
+      await tester.pump(const Duration(seconds: 31));
       expect(opens, 0);
       await tester.pump(const Duration(seconds: 1));
       expect(opens, 1);

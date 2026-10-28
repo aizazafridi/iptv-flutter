@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../domain/models.dart';
 import '../domain/iptv_provider.dart';
 import '../application/category_locks.dart';
@@ -7,7 +8,7 @@ import 'activation_text_field.dart';
 import 'system_clock.dart';
 import 'widgets.dart';
 
-const guidePixelsPerMinute = 4.0;
+const guidePixelsPerMinute = 3.2;
 double guideDurationWidth(Duration duration) =>
     duration.inMilliseconds / 60000 * guidePixelsPerMinute;
 
@@ -35,6 +36,81 @@ class TvGuideScreen extends StatefulWidget {
 
 class _TvGuideScreenState extends State<TvGuideScreen> {
   late Future<List<ContentItem>> channels = load();
+  final refreshFocus = FocusNode(debugLabel: 'guide refresh');
+  final searchFocus = FocusNode(debugLabel: 'guide search');
+  final categoryNodes = <String, FocusNode>{};
+  final channelNodes = <String, FocusNode>{};
+  final vertical = ScrollController();
+  final categoryScroll = ScrollController();
+  List<Category> categories = [];
+  List<ContentItem> displayed = [];
+  String? categoryId;
+  bool initializedCategory = false;
+  bool initialFocusPending = true;
+  FocusNode categoryNode(String id) => categoryNodes.putIfAbsent(
+    id,
+    () => FocusNode(debugLabel: 'guide category $id'),
+  );
+  FocusNode channelNode(String id) => channelNodes.putIfAbsent(
+    id,
+    () => FocusNode(debugLabel: 'guide channel $id'),
+  );
+  void focusCategory() {
+    final id = categoryId ?? '';
+    final node = categoryNode(id);
+    if (node.context != null) {
+      node.requestFocus();
+      Scrollable.ensureVisible(
+        node.context!,
+        duration: const Duration(milliseconds: 150),
+      );
+      return;
+    }
+    // The selected category may not be built yet in the horizontal lazy list.
+    final index = id.isEmpty ? 0 : categories.indexWhere((c) => c.id == id) + 1;
+    if (categoryScroll.hasClients) {
+      categoryScroll.jumpTo(
+        (index * 150.0).clamp(0, categoryScroll.position.maxScrollExtent),
+      );
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) node.requestFocus();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void focusChannel([int index = 0]) {
+    if (displayed.isEmpty) {
+      focusCategory();
+      return;
+    }
+    final target = index.clamp(0, displayed.length - 1);
+    if (vertical.hasClients) {
+      vertical.jumpTo(
+        (target * 52.0).clamp(0, vertical.position.maxScrollExtent),
+      );
+    }
+    channelNode(displayed[target].id).requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) channelNode(displayed[target].id).requestFocus();
+    });
+  }
+
+  KeyEventResult navigate(KeyEvent event, VoidCallback up, VoidCallback down) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      up();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      down();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   final schedules = <String, Future<List<EpgProgramme>>>{};
   final controller = TextEditingController();
   final horizontal = ScrollController();
@@ -48,6 +124,31 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
   final timelineWidth = guideDurationWidth(const Duration(hours: 6));
   late ContentItem? tunedChannel = widget.previewChannel;
   bool tuning = false;
+  String? activatedChannel;
+  DateTime? activatedAt;
+  Future<void>? pendingTune;
+  Future<void> activateChannel(ContentItem channel) async {
+    final now = DateTime.now();
+    final doubleEnter =
+        activatedChannel == channel.id &&
+        activatedAt != null &&
+        now.difference(activatedAt!) < const Duration(milliseconds: 500);
+    activatedChannel = channel.id;
+    activatedAt = now;
+    if (doubleEnter) {
+      activatedAt = null;
+      await pendingTune;
+      if (mounted && tunedChannel?.id == channel.id) {
+        widget.onWatchPreview?.call();
+      }
+      return;
+    }
+    if (!tuning && widget.onTune != null) {
+      pendingTune = tune(channel);
+      await pendingTune;
+    }
+  }
+
   Future<void> tune(ContentItem channel) async {
     if (tuning || widget.onTune == null) return;
     setState(() => tuning = true);
@@ -84,6 +185,13 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
   @override
   void dispose() {
     clock?.cancel();
+    refreshFocus.dispose();
+    searchFocus.dispose();
+    vertical.dispose();
+    categoryScroll.dispose();
+    for (final node in [...categoryNodes.values, ...channelNodes.values]) {
+      node.dispose();
+    }
     controller.dispose();
     horizontal.dispose();
     offset.dispose();
@@ -109,6 +217,20 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                       )),
         )
         .toList();
+    final available = await widget.provider.getCategories(ContentType.live);
+    categories = available
+        .where((c) => !locks.hidden(c) && !locks.isLocked(c))
+        .toList();
+    if (!initializedCategory) {
+      categoryId =
+          visible
+              .where((c) => c.id == widget.previewChannel?.id)
+              .firstOrNull
+              ?.categoryId ??
+          widget.previewChannel?.categoryId;
+      if (!categories.any((c) => c.id == categoryId)) categoryId = null;
+      initializedCategory = true;
+    }
     // Promote the playing channel without changing the provider's remaining order.
     final current = visible.indexWhere(
       (item) => item.id == widget.previewChannel?.id,
@@ -288,37 +410,49 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
       ],
     ),
   );
-  Widget timelineRow(ContentItem item) => Row(
+  Widget timelineRow(ContentItem item, int index) => Row(
     children: [
       Container(
-        width: 180,
-        height: 72,
+        width: 160,
+        height: 49,
         margin: const EdgeInsets.only(right: 3),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         color: const Color(0xff1d242c),
         child: Material(
           color: Colors.transparent,
-          child: InkWell(
-            onTap: widget.onTune == null || tuning ? null : () => tune(item),
-            child: Row(
-              children: [
-                SizedBox.square(
-                  dimension: 36,
-                  child: ChannelLogo(item.artwork),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    item.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+          child: Focus(
+            onKeyEvent: (_, event) => navigate(
+              event,
+              () => index == 0 ? focusCategory() : focusChannel(index - 1),
+              () => focusChannel(index + 1),
+            ),
+            child: InkWell(
+              key: ValueKey('guide-channel:${item.id}'),
+              focusNode: channelNode(item.id),
+              focusColor: const Color(0xff365777),
+              onTap: () {
+                unawaited(activateChannel(item));
+              },
+              child: Row(
+                children: [
+                  SizedBox.square(
+                    dimension: 28,
+                    child: ChannelLogo(item.artwork),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      item.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -374,7 +508,7 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                     offset: Offset(-x, 0),
                     child: SizedBox(
                       width: timelineWidth,
-                      height: 72,
+                      height: 49,
                       child: Stack(
                         children: [
                           for (final p in entries)
@@ -449,13 +583,18 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
         ),
         actions: [
           const SystemClock(),
-          IconButton(
-            tooltip: 'Refresh guide',
-            icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() {
-              schedules.clear();
-              channels = load();
-            }),
+          Focus(
+            onKeyEvent: (_, event) =>
+                navigate(event, () {}, () => searchFocus.requestFocus()),
+            child: IconButton(
+              focusNode: refreshFocus,
+              tooltip: 'Refresh guide',
+              icon: const Icon(Icons.refresh),
+              onPressed: () => setState(() {
+                schedules.clear();
+                channels = load();
+              }),
+            ),
           ),
         ],
       ),
@@ -489,6 +628,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                           Expanded(
                             child: ActivationTextField(
                               controller: controller,
+                              focusNode: searchFocus,
+                              onNavigateUp: () => refreshFocus.requestFocus(),
+                              onNavigateDown: focusCategory,
                               decoration: const InputDecoration(
                                 hintText: 'Search channels',
                                 isDense: true,
@@ -503,11 +645,76 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                       ),
                     ),
                     SizedBox(
+                      height: 40,
+                      child: FutureBuilder<List<ContentItem>>(
+                        future: channels,
+                        builder: (context, snapshot) => ListView(
+                          controller: categoryScroll,
+                          itemExtent: 150,
+                          scrollDirection: Axis.horizontal,
+                          children: [
+                            for (final category in [
+                              const Category('', 'All', ContentType.live),
+                              ...categories,
+                            ])
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                  right: 8,
+                                  bottom: 6,
+                                ),
+                                child: Focus(
+                                  onFocusChange: (focused) {
+                                    if (focused) {
+                                      final ctx = categoryNode(
+                                        category.id,
+                                      ).context;
+                                      if (ctx != null) {
+                                        Scrollable.ensureVisible(
+                                          ctx,
+                                          duration: const Duration(
+                                            milliseconds: 150,
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                  onKeyEvent: (_, event) => navigate(
+                                    event,
+                                    () => searchFocus.requestFocus(),
+                                    () => focusChannel(),
+                                  ),
+                                  child: TextButton(
+                                    focusNode: categoryNode(category.id),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: Colors.white,
+                                      backgroundColor:
+                                          (categoryId ?? '') == category.id
+                                          ? const Color(0xff29466a)
+                                          : null,
+                                      textStyle: const TextStyle(fontSize: 12),
+                                    ),
+                                    onPressed: () => setState(() {
+                                      categoryId = category.id.isEmpty
+                                          ? null
+                                          : category.id;
+                                      if (vertical.hasClients) {
+                                        vertical.jumpTo(0);
+                                      }
+                                    }),
+                                    child: Text(category.name),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    SizedBox(
                       height: 36,
                       child: Row(
                         children: [
                           Container(
-                            width: 183,
+                            width: 163,
                             alignment: Alignment.centerLeft,
                             padding: const EdgeInsets.only(left: 12),
                             color: const Color(0xff29313c),
@@ -529,7 +736,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                                   children: [
                                     for (var i = 0; i < 12; i++)
                                       Container(
-                                        width: 120,
+                                        width: guideDurationWidth(
+                                          const Duration(minutes: 30),
+                                        ),
                                         height: 36,
                                         alignment: Alignment.centerLeft,
                                         padding: const EdgeInsets.only(
@@ -574,19 +783,29 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                           final visible = rows
                               .where(
                                 (item) =>
-                                    item.name.toLowerCase().contains(query),
+                                    item.name.toLowerCase().contains(query) &&
+                                    (categoryId == null ||
+                                        item.categoryId == categoryId),
                               )
                               .toList();
+                          displayed = visible;
+                          if (initialFocusPending && visible.isNotEmpty) {
+                            initialFocusPending = false;
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) focusChannel();
+                            });
+                          }
                           if (visible.isEmpty) {
                             return const Center(
                               child: Text('No channels available'),
                             );
                           }
                           return ListView.builder(
-                            itemExtent: 75,
+                            controller: vertical,
+                            itemExtent: 52,
                             itemCount: visible.length,
                             itemBuilder: (context, index) =>
-                                timelineRow(visible[index]),
+                                timelineRow(visible[index], index),
                           );
                         },
                       ),
@@ -641,7 +860,7 @@ class _ProgrammeCellState extends State<_ProgrammeCell> {
               if (value) widget.onFocus();
             },
             child: Padding(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -650,23 +869,23 @@ class _ProgrammeCellState extends State<_ProgrammeCell> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: FontWeight.w500,
                       color: focused ? Colors.black87 : Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 3),
                   Text(
                     widget.time,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 10,
+                      fontSize: 9,
                       color: focused ? Colors.black54 : Colors.white54,
                     ),
                   ),
                   if (p.isCurrent(now)) ...[
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 3),
                     LinearProgressIndicator(
                       value:
                           now.difference(p.start).inMilliseconds /

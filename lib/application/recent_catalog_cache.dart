@@ -5,6 +5,10 @@ import 'recent_items.dart';
 /// Cache belongs to the connected provider, so accounts never share catalogues.
 class RecentCatalogCache {
   static final _cache = Expando<Map<ContentType, Future<List<ContentItem>>>>();
+  static Future<List<ContentItem>>? peek(
+    IptvProvider provider,
+    ContentType type,
+  ) => _cache[provider]?[type];
   static void invalidate(IptvProvider provider) => _cache[provider]?.clear();
   static Future<List<ContentItem>> load(
     IptvProvider provider,

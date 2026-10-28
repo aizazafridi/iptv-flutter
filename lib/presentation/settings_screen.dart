@@ -1,3 +1,4 @@
+import 'package:flutter_svg/flutter_svg.dart';
 import '../data/video_recordings.dart';
 import '../data/playback_preferences.dart';
 import 'package:flutter/material.dart';
@@ -77,7 +78,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool enteringParental = false;
   Future<void> enterSection(String title) async {
-    if (title != 'Parental controls') {
+    final active = widget.session.provider;
+    final kids =
+        active != null && CategoryLocks.forProvider(active).kidsProfile;
+    if (title != 'Parental controls' &&
+        !(kids && title == 'Profile settings')) {
       setState(() => selectedSection = title);
       return;
     }
@@ -442,6 +447,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     icon: Icons.person_outline,
                     title: 'Profile settings',
                     children: [
+                      SwitchListTile(
+                        title: const Text('Show Profile Selection on Startup'),
+                        value: widget.session.showProfileSelectionOnStartup,
+                        onChanged: (value) async {
+                          await widget.session.setShowProfileSelection(value);
+                          if (mounted) setState(() {});
+                        },
+                      ),
                       if (widget.session.activeProfile != null)
                         ListTile(
                           title: const Text('Edit current account'),
@@ -584,6 +597,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ],
+                  settingsCategory(
+                    icon: Icons.info_outline,
+                    title: 'About and credits',
+                    children: [
+                      const Text(
+                        'Streamora',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: SvgPicture.asset(
+                          'assets/branding/tmdb.svg',
+                          width: 100,
+                          height: 72,
+                          semanticsLabel: 'The Movie Database',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'This product uses the TMDB API but is not endorsed or certified by TMDB.',
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Movie cast information and photos provided by The Movie Database.\nhttps://www.themoviedb.org',
+                        style: TextStyle(fontSize: 13, color: Colors.white60),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'IMDb and Rotten Tomatoes scores supplied by OMDb when available.\nhttps://www.omdbapi.com\nOMDb data: CC BY-NC 4.0. Streamora is not affiliated with IMDb or Rotten Tomatoes.',
+                        style: TextStyle(fontSize: 13, color: Colors.white60),
+                      ),
+                    ],
+                  ),
                   if (widget.session.error != null) Text(widget.session.error!),
                   if (widget.appearance.error != null)
                     Text(widget.appearance.error!),

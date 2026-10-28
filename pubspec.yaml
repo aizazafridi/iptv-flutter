@@ -14,6 +14,8 @@ dependencies:
   path_provider: ^2.1.6
   ffmpeg_kit_flutter_new_https: ^2.6.7
   cached_network_image: ^4.0.5
+  url_launcher: ^6.3.3
+  flutter_svg: ^2.3.0
 dev_dependencies:
   integration_test:
     sdk: flutter
@@ -26,6 +28,9 @@ flutter:
   assets:
     - assets/avatars/photos/
     - assets/fonts/OFL.txt
+    - assets/branding/tmdb.svg
+    - assets/branding/imdb.svg
+    - assets/branding/rotten_tomatoes.svg
   fonts:
     - family: Roboto
       fonts:

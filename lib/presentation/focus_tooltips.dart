@@ -24,7 +24,9 @@ class _FocusTooltipsState extends State<FocusTooltips> {
     pending = Timer(const Duration(milliseconds: 250), () {
       if (!mounted || focused != FocusManager.instance.primaryFocus) return;
       final target = focused?.context;
-      if (target == null || !target.mounted) return;
+      if (target == null || !target.mounted || !TooltipVisibility.of(target)) {
+        return;
+      }
       target.visitAncestorElements((element) {
         if (element is StatefulElement && element.state is TooltipState) {
           (element.state as TooltipState).ensureTooltipVisible();

@@ -21,7 +21,14 @@ class _SubtitleAppearanceDialogState extends State<SubtitleAppearanceDialog> {
   });
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Subtitle appearance'),
+    title: const Text(
+      'Subtitle appearance',
+      style: TextStyle(
+        fontFamily: 'Roboto',
+        fontSize: 22,
+        fontWeight: FontWeight.w500,
+      ),
+    ),
     content: SizedBox(
       width: 300,
       child: SingleChildScrollView(
@@ -29,8 +36,16 @@ class _SubtitleAppearanceDialogState extends State<SubtitleAppearanceDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             DropdownButtonFormField<double>(
+              style: const TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 14,
+                color: Colors.white,
+              ),
               initialValue: appearance.size,
-              decoration: const InputDecoration(labelText: 'Size'),
+              decoration: const InputDecoration(
+                labelText: 'Size',
+                labelStyle: TextStyle(fontSize: 13),
+              ),
               items: [
                 for (final entry in {
                   18.0: 'Small',
@@ -38,43 +53,57 @@ class _SubtitleAppearanceDialogState extends State<SubtitleAppearanceDialog> {
                   32.0: 'Large',
                   40.0: 'Extra large',
                 }.entries)
-                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+                  DropdownMenuItem(
+                    value: entry.key,
+                    child: Text(
+                      entry.value,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
               ],
               onChanged: (value) => update(size: value),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
+              style: const TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 14,
+                color: Colors.white,
+              ),
               initialValue: appearance.color,
-              decoration: const InputDecoration(labelText: 'Color'),
+              decoration: const InputDecoration(
+                labelText: 'Color',
+                labelStyle: TextStyle(fontSize: 13),
+              ),
               items: [
                 for (final name in SubtitleAppearance.colors.keys)
-                  DropdownMenuItem(value: name, child: Text(name)),
+                  DropdownMenuItem(
+                    value: name,
+                    child: Text(name, style: const TextStyle(fontSize: 14)),
+                  ),
               ],
               onChanged: (value) => update(color: value),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
+              style: const TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 14,
+                color: Colors.white,
+              ),
               initialValue: appearance.position,
-              decoration: const InputDecoration(labelText: 'Position'),
+              decoration: const InputDecoration(
+                labelText: 'Position',
+                labelStyle: TextStyle(fontSize: 13),
+              ),
               items: [
                 for (final name in ['Bottom', 'Middle', 'Top'])
-                  DropdownMenuItem(value: name, child: Text(name)),
+                  DropdownMenuItem(
+                    value: name,
+                    child: Text(name, style: const TextStyle(fontSize: 14)),
+                  ),
               ],
               onChanged: (value) => update(position: value),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              color: Colors.black87,
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                'Subtitle preview',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: appearance.size,
-                  color: SubtitleAppearance.colors[appearance.color],
-                ),
-              ),
             ),
           ],
         ),
@@ -83,7 +112,7 @@ class _SubtitleAppearanceDialogState extends State<SubtitleAppearanceDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Done'),
+        child: const Text('Done', style: TextStyle(fontSize: 13)),
       ),
     ],
   );

@@ -43,9 +43,6 @@ void main() {
     await tester.tap(find.text('Top').last);
     await tester.pumpAndSettle();
     expect(engine.subtitleAppearance.alignment, Alignment.topCenter);
-    expect(
-      tester.widget<Text>(find.text('Subtitle preview')).style!.color,
-      Colors.yellow,
-    );
+    expect(find.text('Subtitle preview'), findsNothing);
   });
 }

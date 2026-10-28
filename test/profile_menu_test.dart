@@ -45,13 +45,13 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('What are we watching?'), findsOneWidget);
+      expect(find.text('Continue watching'), findsOneWidget);
       expect(find.text('My profile'), findsNothing);
       expect(find.textContaining('Expires'), findsNothing);
       expect(tester.widget<ProfileAvatar>(find.byType(ProfileAvatar)).index, 7);
       expect(
         (tester.getCenter(find.byTooltip('Current account')).dx -
-                tester.getCenter(find.byTooltip('Settings')).dx)
+                tester.getCenter(find.byTooltip('Settings').last).dx)
             .abs(),
         lessThan(65),
       );

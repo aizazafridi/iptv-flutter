@@ -1,3 +1,7 @@
+import 'player_settings_drawer.dart';
+import 'vod_player_controls.dart';
+import 'player_drawer.dart';
+import 'player_episode_drawer.dart';
 import 'live_tv_controls.dart';
 import 'system_clock.dart';
 import '../data/last_live_channel.dart';
@@ -22,7 +26,6 @@ import 'subtitle_appearance_dialog.dart';
 import '../playback/video_display.dart';
 import 'video_display_dialog.dart';
 import 'subtitle_dialog.dart';
-import 'episode_picker.dart';
 import 'epg_panel.dart';
 import 'tv_guide_screen.dart';
 import 'channel_picker.dart';
@@ -38,8 +41,9 @@ import '../playback/live_stream_recovery.dart';
 import '../playback/media_kit_engine.dart';
 
 class PlayerScreen extends StatefulWidget {
-  final bool liveTvMode, initialChannelPicker, initialGuide;
+  final bool liveTvMode, initialChannelPicker, initialGuide, initialFullscreen;
   final PlaybackSource source;
+  final MediaDetails? metadata;
   final IptvProvider? provider;
   final String channelCategory;
   final Future<List<ContentItem>> Function()? loadChannels;
@@ -57,7 +61,9 @@ class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
     required this.source,
+    this.metadata,
     this.liveTvMode = false,
+    this.initialFullscreen = false,
     this.initialChannelPicker = false,
     this.initialGuide = false,
     this.provider,
@@ -80,6 +86,108 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
+  Episode? changedEpisode;
+  Episode? get currentEpisode => changedEpisode ?? widget.episode;
+  Episode? get nextEpisode {
+    final index = widget.episodes.indexWhere((e) => e.id == currentEpisode?.id);
+    if (index >= 0) {
+      return index + 1 < widget.episodes.length
+          ? widget.episodes[index + 1]
+          : null;
+    }
+    return widget.nextEpisode;
+  }
+
+  Episode? get previousEpisode {
+    final index = widget.episodes.indexWhere((e) => e.id == currentEpisode?.id);
+    return index > 0 ? widget.episodes[index - 1] : null;
+  }
+
+  PlaybackSource? vodSource;
+  Duration? changedResume;
+  Duration get resumeAt => changedResume ?? widget.resumeAt;
+  bool vodDrawerOpen = false, upNextVisible = false, autoplayNext = false;
+  String selectedSubtitleId = 'auto';
+  bool autoNextCancelled = false;
+  Timer? hiddenSeekTimer;
+  Future<void> vodOverlay(Future<void> Function() action) async {
+    if (vodDrawerOpen || advancingEpisode) return;
+    final previous = FocusManager.instance.primaryFocus;
+    setState(() => vodDrawerOpen = true);
+    controlsTimer?.cancel();
+    try {
+      await action();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not apply player settings. Please retry.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => vodDrawerOpen = false);
+        revealControls();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) previous?.requestFocus();
+        });
+      }
+    }
+  }
+
+  Future<void> audioMenu() async {
+    if (engine is! AudioTrackPlaybackEngine) return;
+    final tracks = engine as AudioTrackPlaybackEngine;
+    final choice = await showPlayerOptions(
+      context,
+      title: 'Audio',
+      settings: true,
+      selected: tracks.selectedAudioTrack,
+      options: [
+        const PlayerOption('auto', 'Automatic'),
+        ...playerTrackOptions(
+          tracks.currentAudioTracks
+              .map((t) => (id: t.id, label: t.label))
+              .toList(),
+        ),
+      ],
+    );
+    if (choice != null) await tracks.selectAudioTrack(choice);
+  }
+
+  Future<void> vodMore() async {
+    await showPlayerDrawer<void>(
+      context,
+      title: 'Player Settings',
+      settings: true,
+      builder: (_) => PlayerSettingsDrawer(
+        autoplay: widget.episodes.isNotEmpty ? autoplayNext : null,
+        rate: playbackRate,
+        seekSeconds: seekSeconds,
+        ratio: engine is VideoDisplayEngine
+            ? (engine as VideoDisplayEngine).videoDisplay.ratio
+            : null,
+        allowSpeed: !recordingLocksPlayback,
+        onAutoplay: (value) async {
+          setState(() => autoplayNext = value);
+          await savePlaybackPreferences();
+        },
+        onRate: setPlaybackRate,
+        onSeek: (value) async {
+          setState(() => seekSeconds = value);
+          await savePlaybackPreferences();
+        },
+        onRatio: (value) async {
+          (engine as VideoDisplayEngine).setVideoDisplay(
+            VideoDisplay(ratio: value),
+          );
+          await savePlaybackPreferences();
+        },
+      ),
+    );
+  }
+
   late final PlaybackEngine engine;
   late final Widget videoSurface;
   final playPauseFocus = FocusNode(debugLabel: 'player play pause');
@@ -107,6 +215,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         requestPreview(Duration(milliseconds: target.toInt()));
         return KeyEventResult.handled;
       }
+      if (!source.isLive &&
+          (event.logicalKey == LogicalKeyboardKey.escape ||
+              event.logicalKey == LogicalKeyboardKey.goBack)) {
+        return KeyEventResult.ignored;
+      }
       if ([
         LogicalKeyboardKey.arrowUp,
         LogicalKeyboardKey.arrowDown,
@@ -126,6 +239,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             framePreview = null;
           });
         }
+        hiddenSeekTimer?.cancel();
+        revealControls();
         playPauseFocus.requestFocus();
         return KeyEventResult.handled;
       }
@@ -151,14 +266,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   bool remoteKeys(KeyEvent event) {
+    if (mounted &&
+        !source.isLive &&
+        !vodDrawerOpen &&
+        ModalRoute.of(context)?.isCurrent == true &&
+        (event.logicalKey == LogicalKeyboardKey.escape ||
+            event.logicalKey == LogicalKeyboardKey.goBack)) {
+      if (event is KeyDownEvent) handlePlayerBack();
+      return true;
+    }
+    if (mounted &&
+        !source.isLive &&
+        event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
+      unawaited(togglePlayback());
+      return true;
+    }
     if (!mounted ||
         event is KeyUpEvent ||
-        showAutoNext ||
         guideVisible ||
         ModalRoute.of(context)?.isCurrent != true) {
       return false;
     }
     final key = event.logicalKey;
+    if (!source.isLive &&
+        (upNextVisible || showAutoNext) &&
+        !vodDrawerOpen &&
+        dragPosition == null &&
+        key == LogicalKeyboardKey.arrowUp &&
+        !upNextFocus.hasFocus) {
+      upNextFocus.requestFocus();
+      return true;
+    }
+    if (upNextScope.hasFocus) return false;
+
     if (![
       LogicalKeyboardKey.select,
       LogicalKeyboardKey.enter,
@@ -170,20 +311,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return false;
     }
     if (liveTvMode && source.isLive && !controlsVisible) {
-      if (key == LogicalKeyboardKey.arrowUp ||
-          key == LogicalKeyboardKey.arrowDown) {
-        unawaited(zapChannel(key == LogicalKeyboardKey.arrowUp ? -1 : 1));
+      if (key == LogicalKeyboardKey.arrowDown) {
+        revealControls();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) playPauseFocus.requestFocus();
+        });
         return true;
       }
+      if (key == LogicalKeyboardKey.arrowUp) return true;
       if (key == LogicalKeyboardKey.arrowLeft ||
           key == LogicalKeyboardKey.arrowRight) {
-        unawaited(compactChannels());
+        unawaited(zapChannel(key == LogicalKeyboardKey.arrowLeft ? -1 : 1));
         return true;
       }
     }
     if (source.isLive && liveSurfaceFocus.hasPrimaryFocus) {
       revealControls();
       playPauseFocus.requestFocus();
+      return true;
+    }
+    if (!source.isLive &&
+        !controlsVisible &&
+        (key == LogicalKeyboardKey.arrowLeft ||
+            key == LogicalKeyboardKey.arrowRight)) {
+      if (recordingLocksPlayback || duration <= Duration.zero) {
+        revealControls();
+        return true;
+      }
+      final target =
+          (position.inMilliseconds +
+                  (key == LogicalKeyboardKey.arrowRight ? 10000 : -10000))
+              .clamp(0, duration.inMilliseconds);
+      setState(() => dragPosition = target.toDouble());
+      revealControls();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) timelineFocus.requestFocus();
+      });
+      hiddenSeekTimer?.cancel();
+      hiddenSeekTimer = Timer(const Duration(milliseconds: 300), () {
+        if (!mounted || dragPosition == null) return;
+        final target = dragPosition!.toInt();
+        setState(() => dragPosition = null);
+        unawaited(seek(Duration(milliseconds: target)));
+        revealControls();
+      });
       return true;
     }
     if (!controlsVisible) {
@@ -272,9 +443,66 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   bool showAutoNext = false;
+  bool episodeCompleted = false;
+  final upNextFocus = FocusNode();
+  final upNextScope = FocusScopeNode();
+  Duration get upNextDuration {
+    if (duration > Duration.zero) return duration;
+    // Some providers deliver the episode runtime before the engine knows it.
+    final parts =
+        currentEpisode?.duration.trim().split(':') ?? const <String>[];
+    if (parts.length == 2 || parts.length == 3) {
+      final values = parts.map(int.tryParse).toList();
+      if (values.every((v) => v != null && v >= 0)) {
+        return Duration(
+          seconds: values.reversed.indexed.fold<int>(
+            0,
+            (sum, entry) =>
+                sum +
+                entry.$2! *
+                    (entry.$1 == 0
+                        ? 1
+                        : entry.$1 == 1
+                        ? 60
+                        : 3600),
+          ),
+        );
+      }
+    }
+    return Duration.zero;
+  }
+
+  void refreshUpNext() {
+    if (!mounted || source.isLive || advancingEpisode) return;
+    final length = upNextDuration;
+    final nearEnd =
+        length > const Duration(seconds: 30) &&
+        position >= length - const Duration(seconds: 30);
+    final visible =
+        nextEpisode != null &&
+        !autoNextCancelled &&
+        (episodeCompleted || nearEnd);
+    final countdown =
+        visible &&
+        autoplayNext &&
+        (episodeCompleted ||
+            (length > Duration.zero &&
+                position >= length - const Duration(seconds: 15)));
+    if (visible != upNextVisible || countdown != showAutoNext) {
+      setState(() {
+        upNextVisible = visible;
+        showAutoNext = countdown;
+      });
+    }
+  }
+
   void cancelAutoNext() {
+    autoNextCancelled = true;
     if (!mounted) return;
-    setState(() => showAutoNext = false);
+    setState(() {
+      showAutoNext = false;
+      upNextVisible = false;
+    });
     revealControls();
     playPauseFocus.requestFocus();
   }
@@ -359,9 +587,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       engine: engine as VideoRecordingEngine,
       store: VideoRecordings.forScope(history.scope),
       item: item,
-      title: widget.episode == null
+      title: currentEpisode == null
           ? source.title
-          : '${source.title} - ${widget.episode!.title}',
+          : '${source.title} - ${currentEpisode!.title}',
     );
     videoRecorder!.addListener(videoRecordingChanged);
   }
@@ -451,7 +679,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   PlaybackSource? liveSource;
-  PlaybackSource get source => liveSource ?? widget.source;
+  PlaybackSource get source => vodSource ?? liveSource ?? widget.source;
   ContentItem? liveChannel;
   bool switchingChannel = false;
   Future<void> chooseChannel() async {
@@ -545,7 +773,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         resumed ||
         !resumeReady ||
         resumeSeeking ||
-        widget.resumeAt <= Duration.zero) {
+        resumeAt <= Duration.zero) {
       return;
     }
     if (resumeAttempts >= 6) {
@@ -565,7 +793,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     resumeSeeking = true;
     resumeAttempts++;
     try {
-      await engine.seek(widget.resumeAt).timeout(const Duration(seconds: 3));
+      await engine.seek(resumeAt).timeout(const Duration(seconds: 3));
     } catch (_) {
       /* Retry after the stream becomes seekable. */
     } finally {
@@ -602,6 +830,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : const VideoDisplay();
     try {
       await PlaybackPreferences(scope).save({
+        'autoplayNext': autoplayNext,
         'seek': seekSeconds,
         'rate': playbackRate,
         'ratio': display.ratio,
@@ -619,16 +848,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (scope == null) return;
     final saved = await PlaybackPreferences(scope).load();
     if (!mounted) return;
-    seekSeconds = [30, 60, 120, 180].contains(saved['seek'])
+    seekSeconds = [10, 20, 30, 60, 120, 180].contains(saved['seek'])
         ? saved['seek']
         : 30;
-    playbackRate = [0.5, 1, 2, 3, 5].contains(saved['rate'])
+    autoplayNext = saved['autoplayNext'] == true;
+    playbackRate = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 5].contains(saved['rate'])
         ? (saved['rate'] as num).toDouble()
         : 1;
     if (engine is VideoDisplayEngine) {
       // Always open edge-to-edge. Previous letterbox/zoom settings should not
       // make a newly opened stream appear smaller than the screen.
-      (engine as VideoDisplayEngine).setVideoDisplay(const VideoDisplay());
+      (engine as VideoDisplayEngine).setVideoDisplay(
+        !source.isLive && VideoDisplay.ratios.contains(saved['ratio'])
+            ? VideoDisplay(ratio: saved['ratio'])
+            : const VideoDisplay(),
+      );
     }
     await engine.setRate(playbackRate);
     if (mounted) setState(() {});
@@ -638,18 +872,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ? '30 seconds'
       : '${seekSeconds ~/ 60} ${seekSeconds == 60 ? 'minute' : 'minutes'}';
   Future<void> chooseEpisode() async {
-    if (videoRecorder?.recording == true) await toggleFileRecording();
+    if (widget.episodes.isEmpty) return;
+    final history = widget.history != null && widget.item != null
+        ? await widget.history!.seriesProgress(widget.item!)
+        : <WatchEntry>[];
     if (!mounted) return;
-    final selected = await showDialog<Episode>(
-      context: context,
-      barrierColor: Colors.transparent,
-      builder: (_) => EpisodePicker(
+    final selected = await showPlayerDrawer<Episode>(
+      context,
+      title: 'Episodes',
+      builder: (_) => PlayerEpisodeDrawer(
         episodes: widget.episodes,
-        currentId: widget.episode?.id,
-        fallbackArtwork: widget.seriesArtwork ?? widget.item?.artwork,
+        current: currentEpisode,
+        history: history,
       ),
     );
-    if (mounted && selected != null && selected.id != widget.episode?.id) {
+    if (mounted && selected != null && selected.id != currentEpisode?.id) {
       await switchEpisode(selected);
     }
   }
@@ -850,7 +1087,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   );
   String? pendingSubtitle;
   String get subtitleScope =>
-      '${widget.history?.scope ?? 'local'}:${widget.item?.type.name ?? 'media'}:${widget.item?.id ?? source.title}:${widget.episode?.id ?? ''}';
+      '${widget.history?.scope ?? 'local'}:${widget.item?.type.name ?? 'media'}:${widget.item?.id ?? source.title}:${currentEpisode?.id ?? ''}';
   Future<void> restoreSubtitles() async {
     if (engine is! SubtitleCustomizationEngine) return;
     final custom = engine as SubtitleCustomizationEngine;
@@ -878,6 +1115,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           await engine.selectSubtitle(id);
         } else {
           pendingSubtitle = id;
+          selectedSubtitleId = id;
         }
       }
     } catch (_) {
@@ -897,7 +1135,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     guideVisible = widget.initialGuide;
-    if (liveTvMode) {
+    if (liveTvMode || widget.initialFullscreen || !source.isLive) {
       fullscreen = true;
       controlsVisible = false;
     }
@@ -912,11 +1150,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
           if (source.isLive && completed) liveRecovery?.failed();
           if (!mounted ||
               source.isLive ||
-              widget.nextEpisode == null ||
+              nextEpisode == null ||
               advancingEpisode) {
             return;
           }
-          setState(() => showAutoNext = completed);
+          setState(() {
+            episodeCompleted = completed;
+          });
+          refreshUpNext();
+          if (completed && !autoNextCancelled) {
+            setState(() => controlsVisible = true);
+          }
         }),
       );
     }
@@ -955,12 +1199,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
             if (error != null) setState(() => error = null);
           }
           position = value;
+          refreshUpNext();
           if (!savedInitialProgress &&
               !source.isLive &&
               widget.history != null &&
               duration > Duration.zero &&
               position.inSeconds >= 1 &&
-              (widget.resumeAt == Duration.zero || resumed)) {
+              (resumeAt == Duration.zero || resumed)) {
             savedInitialProgress = true;
             unawaited(saveProgress());
           }
@@ -972,8 +1217,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             unawaited(toggleFileRecording());
           }
           if (!resumed &&
-              widget.resumeAt > Duration.zero &&
-              (value - widget.resumeAt).abs() < const Duration(seconds: 3)) {
+              resumeAt > Duration.zero &&
+              (value - resumeAt).abs() < const Duration(seconds: 3)) {
             resumed = true;
             resumeRetry?.cancel();
           }
@@ -988,14 +1233,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     subscriptions.add(
       engine.duration.listen((value) {
-        if (mounted) setState(() => duration = value);
+        if (mounted) {
+          setState(() => duration = value);
+          refreshUpNext();
+        }
         unawaited(verifyResume());
       }),
     );
     subscriptions.add(
       engine.playing.listen((value) {
         if (value) rememberLiveChannel();
-        if (!value && !starting) liveRecovery?.failed();
+        if (!value && !starting && !buffering) liveRecovery?.failed();
         if (mounted) {
           setState(() {
             playing = value;
@@ -1004,6 +1252,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               error = null;
             }
           });
+          if (!source.isLive) revealControls();
         }
       }),
     );
@@ -1047,6 +1296,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
     if (!liveTvMode) revealControls();
+    if (!source.isLive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) playPauseFocus.requestFocus();
+      });
+    }
     if (source.isLive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -1069,7 +1323,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       await engine.open(source);
       resumeReady = true;
-      if (widget.resumeAt > Duration.zero && !source.isLive) {
+      if (resumeAt > Duration.zero && !source.isLive) {
         unawaited(verifyResume());
         resumeRetry?.cancel();
         resumeRetry = Timer.periodic(
@@ -1094,7 +1348,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    upNextScope.dispose();
+    upNextFocus.dispose();
     HardwareKeyboard.instance.removeHandler(remoteKeys);
+    hiddenSeekTimer?.cancel();
     resumeRetry?.cancel();
     playbackErrorTimer?.cancel();
     timelineFocus.dispose();
@@ -1116,7 +1373,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> saveProgress() async {
-    if ((widget.resumeAt > Duration.zero && !resumed) ||
+    if ((resumeAt > Duration.zero && !resumed) ||
         skipFinalProgressSave ||
         source.isLive ||
         widget.history == null ||
@@ -1127,7 +1384,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await widget.history!.save(
       WatchEntry(
         widget.item!,
-        widget.episode,
+        currentEpisode,
         position,
         duration,
         DateTime.now().toUtc(),
@@ -1152,119 +1409,194 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> playNextEpisode() async {
     if (showAutoNext && mounted) setState(() => showAutoNext = false);
     if (videoRecorder?.recording == true) await toggleFileRecording();
-    if (widget.nextEpisode != null) await switchEpisode(widget.nextEpisode!);
+    if (nextEpisode != null) await switchEpisode(nextEpisode!);
   }
 
   Future<void> switchEpisode(Episode selected) async {
     if (advancingEpisode) return;
     setState(() => advancingEpisode = true);
     try {
+      if (videoRecorder?.recording == true) await toggleFileRecording();
+      final provider = widget.provider;
+      if (provider == null || widget.item == null) {
+        await saveProgress();
+        skipFinalProgressSave = true;
+        progressTimer?.cancel();
+        await engine.stop();
+        if (mounted) Navigator.of(context).pop(selected);
+        return;
+      }
+      final resolved = await provider.resolvePlayback(
+        widget.item!,
+        episode: selected,
+      );
+      final saved = await widget.history?.latest(
+        widget.item!,
+        episode: selected,
+      );
       await saveProgress();
-      skipFinalProgressSave = true;
-      progressTimer?.cancel();
-      await engine.stop();
-      if (mounted) Navigator.of(context).pop(selected);
+      if (!mounted) return;
+      resumeRetry?.cancel();
+      playbackErrorTimer?.cancel();
+      previewDebounce?.cancel();
+      previewHide?.cancel();
+      previewVersion++;
+      setState(() {
+        changedEpisode = selected;
+        vodSource = resolved;
+        changedResume = saved?.position ?? Duration.zero;
+        position = Duration.zero;
+        duration = Duration.zero;
+        resumed = false;
+        resumeReady = false;
+        resumeAttempts = 0;
+        dragPosition = null;
+        previewTarget = null;
+        framePreview = null;
+        pendingSubtitle = null;
+        subtitleTracks = [];
+        selectedSubtitleName = 'Off';
+        showAutoNext = false;
+        autoNextCancelled = false;
+        selectedSubtitleId = 'auto';
+        upNextVisible = false;
+        episodeCompleted = false;
+      });
+      await start();
     } catch (_) {
       if (mounted) {
-        setState(() => advancingEpisode = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Could not switch episodes. Please retry.'),
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => advancingEpisode = false);
     }
   }
 
   Future<void> subtitleMenu() async {
-    final choice = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Subtitles'),
-        contentPadding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-        content: SizedBox(
-          width: 280,
-          height: 240,
-          child: StreamBuilder<List<SubtitleOption>>(
-            stream: engine.subtitles,
-            initialData: subtitleTracks,
-            builder: (_, snapshot) => ListView(
-              shrinkWrap: true,
-              children: [
-                ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity.compact,
-                  leading: const Icon(Icons.add),
-                  title: const Text('Add subtitle URL'),
-                  onTap: () => Navigator.pop(context, '__url'),
+    final choice = !source.isLive
+        ? await showPlayerOptions(
+            context,
+            title: 'Subtitles',
+            settings: true,
+            selected: selectedSubtitleId,
+            options: [
+              const PlayerOption('no', 'Off'),
+              const PlayerOption('auto', 'Automatic'),
+              ...playerTrackOptions(
+                subtitleTracks
+                    .map((track) => (id: track.id, label: track.label))
+                    .toList(),
+              ),
+              const PlayerOption(
+                '__url',
+                'Add subtitle URL',
+                section: 'External Subtitles',
+              ),
+              const PlayerOption(
+                '__online',
+                'Search online subtitles',
+                section: 'External Subtitles',
+              ),
+              if (engine is SubtitleCustomizationEngine)
+                const PlayerOption(
+                  '__style',
+                  'Size, color and position',
+                  section: 'Appearance',
                 ),
-                ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity.compact,
-                  leading: const Icon(Icons.search),
-                  title: const Text('Search online subtitles'),
-                  onTap: () => Navigator.pop(context, '__online'),
-                ),
-                if (engine is SubtitleCustomizationEngine) ...[
-                  StreamBuilder<String>(
-                    stream: (engine as SubtitleCustomizationEngine)
-                        .selectedSubtitle,
-                    builder: (_, snapshot) => ListTile(
-                      dense: true,
-                      visualDensity: VisualDensity.compact,
-                      title: Text(
-                        'Selected: ${snapshot.data ?? selectedSubtitleName}',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+            ],
+          )
+        : await showDialog<String>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Subtitles'),
+              contentPadding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+              content: SizedBox(
+                width: 280,
+                height: 240,
+                child: StreamBuilder<List<SubtitleOption>>(
+                  stream: engine.subtitles,
+                  initialData: subtitleTracks,
+                  builder: (_, snapshot) => ListView(
+                    shrinkWrap: true,
+                    children: [
+                      ListTile(
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        leading: const Icon(Icons.add),
+                        title: const Text('Add subtitle URL'),
+                        onTap: () => Navigator.pop(context, '__url'),
                       ),
-                    ),
+                      ListTile(
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        leading: const Icon(Icons.search),
+                        title: const Text('Search online subtitles'),
+                        onTap: () => Navigator.pop(context, '__online'),
+                      ),
+                      if (engine is SubtitleCustomizationEngine) ...[
+                        StreamBuilder<String>(
+                          stream: (engine as SubtitleCustomizationEngine)
+                              .selectedSubtitle,
+                          builder: (_, snapshot) => ListTile(
+                            dense: true,
+                            visualDensity: VisualDensity.compact,
+                            title: Text(
+                              'Selected: ${snapshot.data ?? selectedSubtitleName}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                        ListTile(
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          leading: const Icon(Icons.format_size),
+                          title: const Text('Size, color and position'),
+                          onTap: () => Navigator.pop(context, '__style'),
+                        ),
+                      ],
+                      ListTile(
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        title: const Text('Off'),
+                        onTap: () => Navigator.pop(context, 'no'),
+                      ),
+                      ListTile(
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        title: const Text('Automatic'),
+                        onTap: () => Navigator.pop(context, 'auto'),
+                      ),
+                      if ((snapshot.data ?? []).isEmpty)
+                        const ListTile(
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          title: Text('No IPTV subtitle tracks detected.'),
+                        ),
+                      for (final track in snapshot.data ?? <SubtitleOption>[])
+                        ListTile(
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          title: Text(track.label),
+                          onTap: () => Navigator.pop(context, track.id),
+                        ),
+                      const Divider(),
+                    ],
                   ),
-                  ListTile(
-                    dense: true,
-                    visualDensity: VisualDensity.compact,
-                    leading: const Icon(Icons.format_size),
-                    title: const Text('Size, color and position'),
-                    onTap: () => Navigator.pop(context, '__style'),
-                  ),
-                ],
-                ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity.compact,
-                  title: const Text('Off'),
-                  onTap: () => Navigator.pop(context, 'no'),
                 ),
-                ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity.compact,
-                  title: const Text('Automatic'),
-                  onTap: () => Navigator.pop(context, 'auto'),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
                 ),
-                if ((snapshot.data ?? []).isEmpty)
-                  const ListTile(
-                    dense: true,
-                    visualDensity: VisualDensity.compact,
-                    title: Text('No IPTV subtitle tracks detected.'),
-                  ),
-                for (final track in snapshot.data ?? <SubtitleOption>[])
-                  ListTile(
-                    dense: true,
-                    visualDensity: VisualDensity.compact,
-                    title: Text(track.label),
-                    onTap: () => Navigator.pop(context, track.id),
-                  ),
-                const Divider(),
               ],
             ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
+          );
     if (!mounted || choice == null) return;
     if (choice == '__style' && engine is SubtitleCustomizationEngine) {
       await showDialog<void>(
@@ -1281,9 +1613,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return;
     }
     if (choice == '__online') {
+      final savedChoice = await subtitlePreferences.loadChoice(subtitleScope);
+      if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (_) => OnlineSubtitleDialog(
+          selectedFileId:
+              savedChoice?['kind'] == 'online' &&
+                  savedChoice?['fileId'] is int &&
+                  savedChoice?['name'] == selectedSubtitleName
+              ? savedChoice!['fileId'] as int
+              : null,
           title: source.title,
           engine: engine,
           scope: widget.history?.scope,
@@ -1342,6 +1682,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         });
       } else {
         await engine.selectSubtitle(choice);
+        if (mounted) setState(() => selectedSubtitleId = choice);
         if (engine is SubtitleCustomizationEngine) {
           await subtitlePreferences.saveChoice(subtitleScope, {
             'kind': 'track',
@@ -1390,14 +1731,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void handlePlayerBack() {
+    if (!source.isLive && dragPosition != null) {
+      hiddenSeekTimer?.cancel();
+      setState(() {
+        dragPosition = null;
+        previewTarget = null;
+        framePreview = null;
+      });
+      revealControls();
+      return;
+    }
     if (guideVisible) {
       closeGuide();
-    } else if (showAutoNext) {
+    } else if (showAutoNext || upNextVisible) {
       cancelAutoNext();
+    } else if (liveTvMode && source.isLive && controlsVisible) {
+      controlsTimer?.cancel();
+      setState(() => controlsVisible = false);
+      liveSurfaceFocus.requestFocus();
     } else if (controlsVisible) {
       controlsTimer?.cancel();
       setState(() => controlsVisible = false);
       if (source.isLive) liveSurfaceFocus.requestFocus();
+    } else if (liveTvMode && source.isLive) {
+      unawaited(exitPlayer());
     } else {
       unawaited(exitPlayer());
     }
@@ -1409,9 +1766,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (guideVisible) return;
     controlsTimer?.cancel();
     if (!controlsVisible) setState(() => controlsVisible = true);
+    if (!source.isLive && (vodDrawerOpen || !playing || dragPosition != null)) {
+      return;
+    }
     if (!fullscreen && !source.isLive) return;
-    controlsTimer = Timer(Duration(seconds: source.isLive ? 15 : 3), () {
-      if (mounted && (fullscreen || source.isLive)) {
+    controlsTimer = Timer(Duration(seconds: source.isLive ? 15 : 5), () {
+      if (mounted &&
+          (fullscreen || source.isLive) &&
+          (source.isLive ||
+              (playing && !vodDrawerOpen && dragPosition == null))) {
         setState(() => controlsVisible = false);
       }
     });
@@ -1424,36 +1787,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '${hours > 0 ? '$hours:' : ''}${minutes.toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
   }
 
+  double lastSubtitleInset = -1;
   @override
-  Widget build(BuildContext context) => PopScope(
+  Widget build(BuildContext context) {
+    if (engine is SubtitleOverlayAvoidanceEngine) {
+      final inset = !source.isLive && controlsVisible && !vodDrawerOpen
+          ? VodPlayerControls.overlayHeightFor(
+                  MediaQuery.sizeOf(context).height,
+                ) +
+                12
+          : 0.0;
+      if (inset != lastSubtitleInset) {
+        lastSubtitleInset = inset;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            (engine as SubtitleOverlayAvoidanceEngine).setSubtitleBottomInset(
+              inset,
+            );
+          }
+        });
+      }
+    }
+    return TooltipVisibility(visible: false, child: buildPlayer(context));
+  }
+
+  Widget buildPlayer(BuildContext context) => PopScope(
     canPop:
-        exitingPlayer || (!controlsVisible && !showAutoNext && !guideVisible),
+        exitingPlayer ||
+        (!liveTvMode &&
+            !controlsVisible &&
+            !showAutoNext &&
+            !upNextVisible &&
+            !guideVisible),
     onPopInvokedWithResult: (didPop, result) {
       if (didPop) {
         // Capture progress before shutdown events and before the details page resumes.
         progressTimer?.cancel();
         unawaited(saveProgress());
         skipFinalProgressSave = true;
-      } else if (guideVisible) {
-        closeGuide();
-      } else if (showAutoNext) {
-        cancelAutoNext();
       } else {
-        controlsTimer?.cancel();
-        setState(() => controlsVisible = false);
+        handlePlayerBack();
       }
     },
     child: CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.space): () => togglePlayback(),
-        const SingleActivator(LogicalKeyboardKey.mediaPlayPause): () =>
-            togglePlayback(),
+        if (source.isLive)
+          const SingleActivator(LogicalKeyboardKey.mediaPlayPause): () =>
+              togglePlayback(),
         const SingleActivator(LogicalKeyboardKey.mediaFastForward): () =>
             seek(position + Duration(seconds: seekSeconds)),
         const SingleActivator(LogicalKeyboardKey.mediaRewind): () =>
             seek(position - Duration(seconds: seekSeconds)),
-        const SingleActivator(LogicalKeyboardKey.escape): handlePlayerBack,
-        const SingleActivator(LogicalKeyboardKey.goBack): handlePlayerBack,
+        if (source.isLive)
+          const SingleActivator(LogicalKeyboardKey.escape): handlePlayerBack,
+        if (source.isLive)
+          const SingleActivator(LogicalKeyboardKey.goBack): handlePlayerBack,
       },
       child: Focus(
         focusNode: liveSurfaceFocus,
@@ -1603,7 +1992,89 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ],
                   ),
                 ),
-                if (controlsVisible && !liveTvMode)
+                if (!source.isLive &&
+                    controlsVisible &&
+                    dragPosition != null &&
+                    framePreview != null)
+                  Positioned(
+                    bottom: 285,
+                    left: 28,
+                    child: SizedBox(
+                      width: 208,
+                      height: 118,
+                      child: Image.memory(
+                        framePreview!.image,
+                        fit: BoxFit.contain,
+                        gaplessPlayback: true,
+                      ),
+                    ),
+                  ),
+                if (!source.isLive)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: VodPlayerControls(
+                      title: widget.item?.name ?? source.title,
+                      metadata: currentEpisode != null
+                          ? 'S${currentEpisode!.season} E${currentEpisode!.number} \u00b7 ${currentEpisode!.title}'
+                          : [
+                              if (widget.item?.releaseYear != null)
+                                '${widget.item!.releaseYear}'
+                              else if ((widget.metadata?.releaseDate ?? '')
+                                      .length >=
+                                  4)
+                                widget.metadata!.releaseDate.substring(0, 4),
+                              widget.metadata?.genre ?? '',
+                            ].where((s) => s.isNotEmpty).join(' \u00b7 '),
+                      position:
+                          dragPosition ?? position.inMilliseconds.toDouble(),
+                      duration: duration.inMilliseconds.toDouble(),
+                      positionLabel: time(
+                        dragPosition == null
+                            ? position
+                            : Duration(milliseconds: dragPosition!.toInt()),
+                      ),
+                      durationLabel: time(duration),
+                      visible: controlsVisible && !vodDrawerOpen,
+                      playing: playing,
+                      seekEnabled:
+                          !recordingLocksPlayback && duration > Duration.zero,
+                      seeking: dragPosition != null,
+                      playFocus: playPauseFocus,
+                      seekFocus: timelineFocus,
+                      onActivity: revealControls,
+                      onPlay: togglePlayback,
+                      onRewind: () =>
+                          seek(position - const Duration(seconds: 10)),
+                      onForward: () =>
+                          seek(position + const Duration(seconds: 10)),
+                      onPrevious: previousEpisode == null || advancingEpisode
+                          ? null
+                          : () => switchEpisode(previousEpisode!),
+                      onNext: nextEpisode == null || advancingEpisode
+                          ? null
+                          : playNextEpisode,
+                      onEpisodes: widget.episodes.isEmpty
+                          ? null
+                          : () => vodOverlay(chooseEpisode),
+                      onAudio: engine is AudioTrackPlaybackEngine
+                          ? () => vodOverlay(audioMenu)
+                          : null,
+                      onSubtitles: () => vodOverlay(subtitleMenu),
+                      onMore: () => vodOverlay(vodMore),
+                      onSeekChanged: (value) {
+                        controlsTimer?.cancel();
+                        setState(() => dragPosition = value);
+                      },
+                      onSeekEnd: (value) {
+                        unawaited(seek(Duration(milliseconds: value.toInt())));
+                        setState(() => dragPosition = null);
+                        revealControls();
+                      },
+                    ),
+                  ),
+                if (controlsVisible && !liveTvMode && source.isLive)
                   Positioned(
                     bottom: 0,
                     left: 0,
@@ -1730,6 +2201,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                             child: Column(
                               children: [
+                                if (!source.isLive && widget.initialFullscreen)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(
+                                        source.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 if (!source.isLive)
                                   Row(
                                     children: [
@@ -2211,7 +2698,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          if (widget.nextEpisode != null)
+                                          if (nextEpisode != null)
                                             FilledButton.tonalIcon(
                                               onPressed: advancingEpisode
                                                   ? null
@@ -2237,7 +2724,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       ),
                                     );
                                     final hasRightControls =
-                                        widget.nextEpisode != null ||
+                                        nextEpisode != null ||
                                         widget.episodes.isNotEmpty;
                                     if (constraints.maxWidth < 650 &&
                                         hasRightControls) {
@@ -2285,18 +2772,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ],
                     ),
                   ),
-                if (showAutoNext && widget.nextEpisode != null)
+                if (!source.isLive &&
+                    (upNextVisible || showAutoNext) &&
+                    nextEpisode != null)
                   Positioned(
-                    right: 20,
-                    bottom: controlsVisible ? 170 : 24,
-                    child: NextEpisodeCountdown(
-                      episode: widget.nextEpisode!,
-                      onPlay: () {
-                        if (showAutoNext && mounted) {
-                          unawaited(playNextEpisode());
-                        }
-                      },
-                      onCancel: cancelAutoNext,
+                    right: 24,
+                    bottom: controlsVisible
+                        ? VodPlayerControls.overlayHeightFor(
+                                MediaQuery.sizeOf(context).height,
+                              ) +
+                              12
+                        : 24,
+                    child: Offstage(
+                      offstage: vodDrawerOpen || dragPosition != null,
+                      child: FocusScope(
+                        node: upNextScope,
+                        child: NextEpisodeCountdown(
+                          key: ValueKey(nextEpisode!.id),
+                          episode: nextEpisode!,
+                          seriesTitle: widget.item?.name,
+                          artwork: widget.seriesArtwork ?? widget.item?.artwork,
+                          playFocus: upNextFocus,
+                          countdown: showAutoNext,
+                          paused:
+                              vodDrawerOpen ||
+                              dragPosition != null ||
+                              advancingEpisode ||
+                              (!playing && !episodeCompleted),
+                          onPlay: () {
+                            unawaited(playNextEpisode());
+                          },
+                          onCancel: cancelAutoNext,
+                          onEpisodes: episodeCompleted && !showAutoNext
+                              ? chooseEpisode
+                              : null,
+                        ),
+                      ),
                     ),
                   ),
                 if (liveTvMode && controlsVisible && !guideVisible) ...[

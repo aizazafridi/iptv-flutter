@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:iptv_flutter/domain/models.dart';
@@ -19,6 +20,31 @@ class GuideProvider extends FakeProvider implements EpgProvider {
       description: 'Programme description',
       start: DateTime.now().subtract(const Duration(minutes: 10)),
       end: DateTime.now().add(const Duration(minutes: 20)),
+    ),
+  ];
+}
+
+class CategoryGuideProvider extends GuideProvider {
+  @override
+  Future<List<Category>> getCategories(ContentType type) async => [
+    const Category('a', 'News', ContentType.live),
+    for (var i = 0; i < 25; i++)
+      Category('extra$i', 'Category $i', ContentType.live),
+    const Category('b', 'Sports', ContentType.live),
+  ];
+  @override
+  Future<List<ContentItem>> getAllItems(ContentType type) async => [
+    const ContentItem(
+      id: '1',
+      name: 'Channel Alpha',
+      type: ContentType.live,
+      categoryId: 'a',
+    ),
+    const ContentItem(
+      id: '2',
+      name: 'Channel Beta',
+      type: ContentType.live,
+      categoryId: 'b',
     ),
   ];
 }
@@ -45,6 +71,60 @@ class DurationProvider extends GuideProvider {
 }
 
 void main() {
+  testWidgets(
+    'guide filters current category and follows remote focus ladder',
+    (tester) async {
+      FlutterSecureStorage.setMockInitialValues({});
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: TvGuideScreen(
+            provider: CategoryGuideProvider(),
+            previewChannel: const ContentItem(
+              id: '2',
+              name: 'Channel Beta',
+              type: ContentType.live,
+              categoryId: 'b',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('guide-channel:1')), findsNothing);
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'guide channel 2');
+      for (final label in [
+        'guide category b',
+        'guide search',
+        'guide refresh',
+      ]) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, label);
+      }
+      expect(tester.widget<TextField>(find.byType(TextField)).readOnly, isTrue);
+      for (final label in [
+        'guide search',
+        'guide category b',
+        'guide channel 2',
+      ]) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, label);
+      }
+      tester
+          .widgetList<ListView>(find.byType(ListView))
+          .firstWhere((list) => list.scrollDirection == Axis.horizontal)
+          .controller!
+          .jumpTo(0);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('News'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('guide-channel:1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('guide-channel:2')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'guide opens with the currently playing channel as its first row',
     (tester) async {

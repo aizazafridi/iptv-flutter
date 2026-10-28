@@ -1,3 +1,4 @@
+import 'live_favourite_dialogs.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../domain/models.dart';
@@ -236,7 +237,8 @@ class _LiveTvControlsState extends State<LiveTvControls> {
     final channel = widget.channel;
     if (provider == null || channel == null) return;
     try {
-      await MyList.forProvider(provider).toggle(channel);
+      widget.onOverlayOpened();
+      await showLiveFavouriteDialog(context, provider, channel);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -478,9 +480,8 @@ class _LiveTvControlsState extends State<LiveTvControls> {
                   action(
                     favorite ? 'Remove from My list' : 'Add to My list',
                     Icon(
-                      favorite
-                          ? Icons.check_circle_outline
-                          : Icons.add_circle_outline,
+                      favorite ? Icons.check : Icons.add,
+                      color: Colors.white,
                     ),
                     widget.provider != null && widget.channel != null
                         ? toggleFavorite

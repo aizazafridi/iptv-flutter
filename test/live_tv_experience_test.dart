@@ -25,6 +25,40 @@ PlaybackSource source(ContentItem item) => PlaybackSource(
   isLive: true,
 );
 void main() {
+  testWidgets(
+    'Back hides visible live controls, then exits to the previous screen',
+    (tester) async {
+      final engine = StableEngine();
+      await tester.pumpWidget(
+        MaterialApp(
+          initialRoute: '/player',
+          routes: {
+            '/': (_) => const Scaffold(body: Text('Catalog')),
+            '/player': (_) => PlayerScreen(
+              source: source(alpha),
+              item: alpha,
+              liveTvMode: true,
+              engineFactory: () => engine,
+            ),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      expect(find.byType(LiveTvControls), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(LiveTvControls), findsNothing);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(PlayerScreen), findsNothing);
+      expect(find.text('Catalog'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   test(
     'startup prefers last watched, then favourites, then API order',
@@ -70,6 +104,20 @@ void main() {
       expect(find.byType(AppBar), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
+      expect(find.byType(LiveTvControls), findsOneWidget);
+      await tester.pump(const Duration(seconds: 16));
+      await tester.pump();
+      expect(find.byType(LiveTvControls), findsNothing);
+      engine.frames.add(const Duration(seconds: 16));
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(find.byType(LiveTvControls), findsOneWidget);
+      await tester.pump(const Duration(seconds: 16));
+      await tester.pump();
+      expect(engine.opens, 1);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
       expect(engine.opens, 2);
       expect(find.byType(LiveTvControls), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
@@ -77,8 +125,8 @@ void main() {
       expect(find.byType(LiveTvControls), findsOneWidget);
       expect(find.byTooltip('Pause'), findsNothing);
       expect(find.byTooltip('More'), findsNothing);
-      expect(find.byTooltip('Catch-up'), findsOneWidget);
-      expect(find.byTooltip('Add to My list'), findsOneWidget);
+      expect(find.text('Catch-up'), findsOneWidget);
+      expect(find.text('My List'), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
       expect(find.byType(ChannelPicker), findsOneWidget);
@@ -97,9 +145,7 @@ void main() {
       expect(find.byType(LiveTvControls), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pumpAndSettle();
-      expect(find.byType(LiveChannelStrip), findsOneWidget);
-      await tester.tap(find.text('Channel Alpha'));
-      await tester.pumpAndSettle();
+      expect(find.byType(LiveChannelStrip), findsNothing);
       expect(engine.opens, 3);
       expect(engine.surfaces, 1);
       expect(engine.builds, 1);

@@ -1,0 +1,5 @@
+TMDB approved blue square logo, appearance unchanged; CSS fill inlined for Flutter SVG compatibility. Author: Travis Bell.
+Source: https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg
+Mirror: https://commons.wikimedia.org/wiki/File:Tmdb.new.logo.svg
+License: Creative Commons Attribution-ShareAlike 4.0 https://creativecommons.org/licenses/by-sa/4.0/
+This product uses the TMDB API but is not endorsed or certified by TMDB.

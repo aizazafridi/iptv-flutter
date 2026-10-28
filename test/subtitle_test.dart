@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+import 'package:iptv_flutter/presentation/vod_player_controls.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -51,7 +53,7 @@ class FakeEngine implements PlaybackEngine {
 
 void main() {
   testWidgets(
-    'player uses compact icon controls and applies all playback speeds',
+    'player uses cinematic controls and applies existing playback speeds',
     (tester) async {
       final engine = FakeEngine();
       await tester.pumpWidget(
@@ -66,29 +68,24 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final width = tester
-          .getSize(find.byKey(const ValueKey('play-pause-control')))
-          .width;
       expect(
-        tester.getSize(find.byKey(const ValueKey('seek-control'))).width,
-        width * 2,
+        tester.getSize(find.byKey(const ValueKey('vod-play-pause'))).width,
+        50,
       );
-      expect(
-        tester.getSize(find.byKey(const ValueKey('speed-control'))).width,
-        width,
-      );
-      for (final entry in {
-        '0.5×': 0.5,
-        '2×': 2.0,
-        '3×': 3.0,
-        '5×': 5.0,
-        'Normal': 1.0,
-      }.entries) {
-        await tester.tap(find.byTooltip('Playback speed'));
+      for (final rate in [0.5, 1.0, 2.0, 3.0, 5.0]) {
+        await tester.tap(find.text('More'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text(entry.key).last);
+        await tester.tap(find.text('Playback Speed'));
         await tester.pumpAndSettle();
-        expect(engine.lastRate, entry.value);
+        await tester.ensureVisible(
+          find.widgetWithText(OutlinedButton, '$rate\u00d7'),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(OutlinedButton, '$rate\u00d7'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Close Player Settings'));
+        await tester.pumpAndSettle();
+        expect(engine.lastRate, rate);
       }
       await tester.pumpWidget(const SizedBox());
     },
@@ -141,16 +138,13 @@ void main() {
     );
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
-    expect(tester.getCenter(find.byTooltip('Episodes')).dx, greaterThan(740));
-    await tester.tap(find.byTooltip('Episodes'));
+    await tester.tap(find.text('Episodes'));
     await tester.pumpAndSettle();
-    expect(find.byType(Dialog), findsOneWidget);
-    expect(
-      tester.widget<Dialog>(find.byType(Dialog)).backgroundColor,
-      Colors.transparent,
-    );
-    expect(find.byType(Image), findsNothing);
-    await tester.tap(find.text('S2 · E1 · Later season'));
+    await tester.tap(find.text('Season 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Season 2').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('E1 \u00b7 Later season'));
     await tester.pumpAndSettle();
     expect(result?.id, '2');
   });
@@ -194,7 +188,7 @@ void main() {
       );
       await tester.tap(find.text('Open series'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Next episode'));
+      await tester.tap(find.text('Next'));
       await tester.pumpAndSettle();
       expect(result?.id, '52');
       expect(find.text('Open series'), findsOneWidget);
@@ -234,41 +228,48 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      for (final entry in {
-        'Rewind 30 seconds': const Duration(minutes: 4, seconds: 30),
-        'Forward 30 seconds': const Duration(minutes: 5, seconds: 30),
-        'Rewind 1 minute': const Duration(minutes: 4),
-        'Forward 1 minute': const Duration(minutes: 6),
-        'Rewind 2 minutes': const Duration(minutes: 3),
-        'Forward 2 minutes': const Duration(minutes: 7),
-        'Rewind 3 minutes': const Duration(minutes: 2),
-        'Forward 3 minutes': const Duration(minutes: 8),
-      }.entries) {
-        await tester.tap(find.byTooltip('Seek interval'));
+      for (final interval in [30, 60, 120, 180]) {
+        await tester.tap(find.text('More'));
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.text(entry.key.split(' ').skip(1).join(' ')).last,
+        await tester.tap(find.text('Seek Interval'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.widgetWithText(OutlinedButton, '${interval}s'),
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.byTooltip(entry.key));
+        await tester.tap(find.widgetWithText(OutlinedButton, '${interval}s'));
         await tester.pumpAndSettle();
-        expect(engine.sought, entry.value);
+        await tester.tap(find.byTooltip('Close Player Settings'));
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.mediaFastForward);
+        await tester.pumpAndSettle();
+        expect(engine.sought, Duration(seconds: 300 + interval));
+        await tester.sendKeyEvent(LogicalKeyboardKey.mediaRewind);
+        await tester.pumpAndSettle();
+        expect(engine.sought, Duration(seconds: 300 - interval));
       }
-      await tester.tap(find.byTooltip('Subtitles'));
+      await tester.tap(find.text('Subtitles'));
       await tester.pumpAndSettle();
       expect(find.text('Search online subtitles'), findsOneWidget);
       await tester.tap(find.text('English'));
       await tester.pumpAndSettle();
       expect(engine.selected, '1');
-      await tester.tap(find.byTooltip('Fullscreen'));
+      await tester.pump(const Duration(seconds: 6));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('Subtitles'), findsNothing);
-      expect(find.byType(Slider), findsNothing);
+      expect(
+        tester
+            .widget<VodPlayerControls>(find.byType(VodPlayerControls))
+            .visible,
+        isFalse,
+      );
       await tester.tapAt(const Offset(200, 200));
-      await tester.pump();
-      expect(find.byTooltip('Exit fullscreen'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 4));
-      expect(find.byTooltip('Exit fullscreen'), findsNothing);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<VodPlayerControls>(find.byType(VodPlayerControls))
+            .visible,
+        isTrue,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );

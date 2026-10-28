@@ -100,19 +100,19 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Resume'), findsOneWidget);
+    expect(find.text('Resume S1 E1'), findsOneWidget);
     expect(find.text('Play from beginning'), findsOneWidget);
     expect(find.text('25 min left'), findsOneWidget);
     expect(
       tester
           .getSize(
             find.ancestor(
-              of: find.text('Resume'),
-              matching: find.byType(TextButton),
+              of: find.text('Resume S1 E1'),
+              matching: find.byType(FilledButton),
             ),
           )
           .width,
-      greaterThan(250),
+      greaterThan(100),
     );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -131,9 +131,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Resume'), findsOneWidget);
+    expect(find.text('Resume - 25 min left'), findsOneWidget);
     expect(find.text('Play from beginning'), findsOneWidget);
-    expect(find.text('25 min left'), findsOneWidget);
     expect(
       tester
           .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))

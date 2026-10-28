@@ -47,12 +47,11 @@ void main() {
       expect(find.byType(ChannelPicker), findsNothing);
       expect(engine.opens, 1);
       expect(engine.surfaces, 1);
-      await tester.tap(find.text('Channel Beta'));
-      await tester.pumpAndSettle();
-      expect(engine.opens, 2);
-      expect(engine.surfaces, 1);
-      expect(find.text('Channel Beta - LIVE TV'), findsOneWidget);
-      await tester.tap(find.byTooltip('Watch channel fullscreen'));
+      Focus.of(tester.element(find.text('Channel Beta'))).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
       expect(find.byType(TvGuideScreen), findsNothing);
       expect(find.byType(LiveTvControls), findsNothing);

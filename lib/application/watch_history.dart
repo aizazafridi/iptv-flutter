@@ -92,6 +92,7 @@ class WatchHistory extends ChangeNotifier {
   WatchHistory(this.scope, {this.storage = const FlutterSecureStorage()});
   List<WatchEntry> _entries = [];
   List<WatchEntry> _resumeEntries = [];
+  List<WatchEntry> _completed = [];
   Future<void>? _loading;
   Future<void> _writes = Future.value();
   Future<void> _load() => _loading ??= () async {
@@ -124,7 +125,26 @@ class WatchHistory extends ChangeNotifier {
     } catch (_) {
       _resumeEntries = List.of(_entries);
     }
+    try {
+      final saved = await storage.read(key: 'completed_episodes:$scope');
+      if (saved != null) {
+        _completed = (jsonDecode(saved) as List)
+            .map((row) => WatchEntry.fromJson(row as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (_) {
+      /* Older profiles have no completion records. */
+    }
   }();
+  Future<List<WatchEntry>> seriesProgress(ContentItem item) async {
+    await _load();
+    return [..._resumeEntries, ..._completed]
+        .where(
+          (entry) => entry.item.type == item.type && entry.item.id == item.id,
+        )
+        .toList();
+  }
+
   Future<List<WatchEntry>> entries() async {
     await _load();
     return List.unmodifiable(_entries);
@@ -196,16 +216,24 @@ class WatchHistory extends ChangeNotifier {
     _revision++;
     _entries.removeWhere((saved) => saved.id == entry.id);
     _resumeEntries.removeWhere((saved) => saved.id == entry.id);
+    _completed.removeWhere((saved) => saved.id == entry.id);
     if (entry.position.inMilliseconds < entry.duration.inMilliseconds * 0.95) {
       _entries.insert(0, entry);
       _resumeEntries.insert(0, entry);
+    } else if (entry.episode != null) {
+      _completed.insert(0, entry);
+      if (_completed.length > 500) _completed = _completed.take(500).toList();
     }
     if (_entries.length > 200) _entries = _entries.take(200).toList();
     final value = jsonEncode(_entries.map((entry) => entry.toJson()).toList());
     final resume = jsonEncode(
       _resumeEntries.map((entry) => entry.toJson()).toList(),
     );
+    final completed = jsonEncode(
+      _completed.map((entry) => entry.toJson()).toList(),
+    );
     final write = _queue(() async {
+      await storage.write(key: 'completed_episodes:$scope', value: completed);
       await storage.write(key: 'resume_positions:$scope', value: resume);
       await storage.write(key: 'watch_history:$scope', value: value);
     });

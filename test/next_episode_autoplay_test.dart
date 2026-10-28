@@ -86,7 +86,7 @@ void main() {
     provider.dispose();
   });
   testWidgets(
-    'vertical countdown fills for ten seconds and plays exactly once',
+    'horizontal countdown runs for fifteen seconds and plays exactly once',
     (tester) async {
       var plays = 0;
       await tester.pumpWidget(
@@ -101,18 +101,18 @@ void main() {
         ),
       );
       await tester.pump();
-      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 7500));
       expect(plays, 0);
       expect(
         tester
-            .widget<FractionallySizedBox>(find.byType(FractionallySizedBox))
-            .heightFactor,
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .value,
         closeTo(0.5, 0.01),
       );
-      expect(find.text('Next episode in 5 seconds'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 4));
-      expect(plays, 0);
-      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Play Next (8s)'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 7500));
       await tester.pump(const Duration(milliseconds: 1));
       expect(plays, 1);
       await tester.pump(const Duration(seconds: 5));
@@ -143,12 +143,12 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Cancel'));
     await tester.pump();
-    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 16));
     expect(plays, 0);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets(
-    'only end-of-media starts autoplay and the next episode is returned after ten seconds',
+    'only end-of-media starts autoplay and the next episode is returned after fifteen seconds',
     (tester) async {
       final engine = CompletedEngine();
       final navigator = GlobalKey<NavigatorState>();
@@ -213,7 +213,7 @@ void main() {
     await tester.binding.handlePopRoute();
     await tester.pump();
     expect(find.byType(NextEpisodeCountdown), findsNothing);
-    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 16));
     expect(engine.stopped, isFalse);
     expect(find.byType(PlayerScreen), findsOneWidget);
     await tester.pumpWidget(const SizedBox());

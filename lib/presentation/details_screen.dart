@@ -5,12 +5,25 @@ import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'player_screen.dart';
 import 'widgets.dart';
-import 'my_list_button.dart';
+import 'cinematic_series_details.dart';
+import 'cinematic_movie_details.dart';
 
 class DetailsScreen extends StatefulWidget {
   final IptvProvider provider;
   final ContentItem item;
-  const DetailsScreen({super.key, required this.provider, required this.item});
+  final bool autoPlay;
+  final Episode? initialEpisode;
+  final Future<SeriesDetails>? initialSeriesDetails;
+  final Future<MediaDetails>? initialMovieDetails;
+  const DetailsScreen({
+    super.key,
+    required this.provider,
+    required this.item,
+    this.autoPlay = false,
+    this.initialEpisode,
+    this.initialSeriesDetails,
+    this.initialMovieDetails,
+  });
   @override
   State<DetailsScreen> createState() => _DetailsScreenState();
 }
@@ -20,6 +33,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
   int? season;
   Episode? episode;
   bool resolving = false;
+  bool autoPlayStarted = false;
   WatchEntry? previous;
   late final history = WatchHistory.forProvider(widget.provider);
   @override
@@ -40,10 +54,13 @@ class _DetailsScreenState extends State<DetailsScreen> {
     super.dispose();
   }
 
-  Future<(MediaDetails, List<Episode>)> load() async {
+  Future<(MediaDetails, List<Episode>)> load({bool refresh = false}) async {
     previous = await history.latest(widget.item);
     if (widget.item.type == ContentType.series) {
-      final result = await widget.provider.getSeriesDetails(widget.item);
+      final result = await (refresh
+          ? widget.provider.getSeriesDetails(widget.item)
+          : widget.initialSeriesDetails ??
+                widget.provider.getSeriesDetails(widget.item));
       for (final entry in result.episodes) {
         if (entry.id == previous?.episode?.id) {
           episode = entry;
@@ -51,272 +68,90 @@ class _DetailsScreenState extends State<DetailsScreen> {
           break;
         }
       }
-      return (result.details, result.episodes);
+      final ordered = List<Episode>.of(result.episodes)
+        ..sort(
+          (a, b) => a.season == b.season
+              ? a.number.compareTo(b.number)
+              : a.season.compareTo(b.season),
+        );
+      return (result.details, ordered);
     }
-    return (await widget.provider.getMovieDetails(widget.item), <Episode>[]);
+    return (
+      await (refresh
+          ? widget.provider.getMovieDetails(widget.item)
+          : widget.initialMovieDetails ??
+                widget.provider.getMovieDetails(widget.item)),
+      <Episode>[],
+    );
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.item.name)),
-    body: AsyncView(
+    body: FutureBuilder<(MediaDetails, List<Episode>)>(
       future: details,
-      retry: () => setState(() => details = load()),
-      builder: (result) {
-        final (info, episodes) = result;
-        final series = widget.item.type == ContentType.series;
-        final seasons = episodes.map((e) => e.season).toSet().toList()..sort();
-        final activeSeason = season ?? (seasons.isEmpty ? null : seasons.first);
-        final visibleEpisodes = episodes
-            .where((e) => e.season == activeSeason)
-            .toList();
-        final selected = episode != null && visibleEpisodes.contains(episode)
-            ? episode
-            : (visibleEpisodes.isEmpty ? null : visibleEpisodes.first);
-        final canResume =
-            previous != null &&
-            (!series || selected?.id == previous?.episode?.id);
-        final played = canResume ? previous!.position : Duration.zero;
-        final length = canResume ? previous!.duration : Duration.zero;
-        final remaining = ((length - played).inSeconds / 60).ceil().clamp(
-          0,
-          99999,
-        );
-        final metadata = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              info.item.name,
-              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return widget.item.type == ContentType.series
+              ? const SeriesDetailsSkeleton()
+              : const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return EmptyState(
+            widget.item.type == ContentType.series
+                ? 'Unable to load episodes'
+                : safeMessage(snapshot.error!),
+            action: () => setState(() {
+              details = load(refresh: true);
+            }),
+          );
+        }
+        final (info, episodes) = snapshot.data!;
+        if (widget.autoPlay &&
+            !autoPlayStarted &&
+            widget.item.type == ContentType.movies) {
+          autoPlayStarted = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) play(info.item, null, const [], artwork: info.artwork);
+          });
+        }
+        if (widget.autoPlay && !autoPlayStarted && episodes.isNotEmpty) {
+          autoPlayStarted = true;
+          final targetId = widget.initialEpisode?.id ?? previous?.episode?.id;
+          final target =
+              episodes.where((entry) => entry.id == targetId).firstOrNull ??
+              episodes.first;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              play(info.item, target, episodes, artwork: info.artwork);
+            }
+          });
+        }
+        if (widget.item.type == ContentType.series) {
+          return CinematicSeriesDetails(
+            provider: widget.provider,
+            info: info,
+            episodes: episodes,
+            resolving: resolving,
+            onPlay: (selected, restart) => play(
+              info.item,
+              selected,
+              episodes,
+              artwork: info.artwork,
+              fromBeginning: restart,
             ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              children:
-                  [
-                        info.genre,
-                        info.releaseDate,
-                        info.rating.isEmpty ? '' : '★ ${info.rating}',
-                        info.duration,
-                      ]
-                      .where((text) => text.isNotEmpty)
-                      .map((text) => Chip(label: Text(text)))
-                      .toList(),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              info.synopsis.isEmpty ? 'No synopsis available.' : info.synopsis,
-              style: const TextStyle(height: 1.35, fontSize: 13),
-            ),
-            if (info.director.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Text('Director · ${info.director}'),
-              ),
-            if (info.cast.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text('Cast · ${info.cast}'),
-              ),
-            const SizedBox(height: 24),
-            if (series && seasons.isNotEmpty) ...[
-              DropdownButtonFormField<int>(
-                itemHeight: 48,
-                style: Theme.of(context).textTheme.bodySmall,
-                key: ValueKey(activeSeason),
-                initialValue: activeSeason,
-                decoration: const InputDecoration(
-                  labelText: 'Season',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                ),
-                items: seasons
-                    .map(
-                      (s) =>
-                          DropdownMenuItem(value: s, child: Text('Season $s')),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  setState(() {
-                    season = value;
-                    episode = episodes
-                        .where((e) => e.season == value)
-                        .firstOrNull;
-                  });
-                  progressChanged();
-                },
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<Episode>(
-                itemHeight: 48,
-                style: Theme.of(context).textTheme.bodySmall,
-                key: ValueKey('episode-${selected?.id}'),
-                initialValue: selected,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Episode',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                ),
-                items: visibleEpisodes
-                    .map(
-                      (e) => DropdownMenuItem(
-                        value: e,
-                        child: Text(
-                          '${e.number}. ${e.title}',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  setState(() => episode = value);
-                  progressChanged();
-                },
-              ),
-              const SizedBox(height: 20),
-            ],
-            if (series && episodes.isEmpty)
-              const Text('No episodes available.'),
-            Wrap(
-              spacing: 16,
-              runSpacing: 12,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Tooltip(
-                  message: canResume ? 'Resume' : 'Play',
-                  child: SizedBox(
-                    width: canResume ? 330 : 110,
-                    child: TextButton(
-                      autofocus: true,
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        backgroundColor: Colors.transparent,
-                        minimumSize: const Size(0, 44),
-                        side: const BorderSide(color: Colors.white54),
-                        shape: const StadiumBorder(),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                      ),
-                      onPressed: resolving || (series && selected == null)
-                          ? null
-                          : () => play(
-                              info.item,
-                              selected,
-                              episodes,
-                              artwork: info.artwork,
-                            ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.play_arrow_rounded, size: 20),
-                          const SizedBox(width: 8),
-                          Text(
-                            resolving
-                                ? 'Preparing...'
-                                : canResume
-                                ? 'Resume'
-                                : 'Play',
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                          if (canResume) ...[
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: LinearProgressIndicator(
-                                value: length.inMilliseconds > 0
-                                    ? (played.inMilliseconds /
-                                              length.inMilliseconds)
-                                          .clamp(0.0, 1.0)
-                                    : 0,
-                                minHeight: 3,
-                                color: Colors.white,
-                                backgroundColor: Colors.white24,
-                                semanticsLabel: 'Playback progress',
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              '$remaining min left',
-                              style: const TextStyle(fontSize: 11),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (canResume)
-                  TextButton.icon(
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(0, 44),
-                      side: const BorderSide(color: Colors.white54),
-                      shape: const StadiumBorder(),
-                    ),
-                    onPressed: resolving
-                        ? null
-                        : () => play(
-                            info.item,
-                            selected,
-                            episodes,
-                            artwork: info.artwork,
-                            fromBeginning: true,
-                          ),
-                    icon: const Icon(Icons.replay, size: 18),
-                    label: const Text(
-                      'Play from beginning',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    MyListButton(
-                      provider: widget.provider,
-                      item: widget.item,
-                      compact: series,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'My List',
-                      style: series ? const TextStyle(fontSize: 13) : null,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        );
-        return LayoutBuilder(
-          builder: (context, constraints) => SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: constraints.maxWidth < 700
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Center(
-                        child: Artwork(info.artwork, width: 160, height: 230),
-                      ),
-                      const SizedBox(height: 24),
-                      metadata,
-                    ],
-                  )
-                : Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Artwork(info.artwork, width: 190, height: 275),
-                      const SizedBox(width: 32),
-                      Expanded(child: metadata),
-                    ],
-                  ),
+          );
+        }
+        return CinematicMovieDetails(
+          provider: widget.provider,
+          info: info,
+          previous: previous,
+          resolving: resolving,
+          onPlay: (restart) => play(
+            info.item,
+            null,
+            const [],
+            artwork: info.artwork,
+            fromBeginning: restart,
           ),
         );
       },
@@ -351,9 +186,13 @@ class _DetailsScreenState extends State<DetailsScreen> {
         final next = index >= 0 && index + 1 < episodes.length
             ? episodes[index + 1]
             : null;
+        final playbackMetadata = (await details).$1;
+        if (!mounted) return;
         final route = SmoothPageRoute<Episode>(
           builder: (_) => PlayerScreen(
             source: source,
+            provider: widget.provider,
+            metadata: playbackMetadata,
             history: history,
             item: item,
             episode: current,
@@ -361,6 +200,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
             episodes: episodes,
             seriesArtwork: artwork,
             resumeAt: resumePosition,
+            initialFullscreen: item.type != ContentType.live,
           ),
         );
         final requested = await Navigator.of(context).push(route);

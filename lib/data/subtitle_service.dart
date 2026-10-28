@@ -8,7 +8,18 @@ class SubtitleResult {
   final int fileId;
   final String label;
   final double score;
-  const SubtitleResult(this.fileId, this.label, {this.score = 0});
+  final String title, language, releaseName, fileName;
+  final int? year;
+  const SubtitleResult(
+    this.fileId,
+    this.label, {
+    this.score = 0,
+    this.title = '',
+    this.language = '',
+    this.releaseName = '',
+    this.fileName = '',
+    this.year,
+  });
 }
 
 /// Subtitle discovery is independent of the IPTV provider and playback library.
@@ -142,6 +153,16 @@ class SubtitleService {
             id,
             '${release.isEmpty ? file['file_name'] ?? candidate : release} · ${attributes['language'] ?? language}',
             score: score,
+            title:
+                (feature['parent_title'] ??
+                        feature['movie_name'] ??
+                        feature['title'] ??
+                        '')
+                    .toString(),
+            language: (attributes['language'] ?? language).toString(),
+            releaseName: release,
+            fileName: (file['file_name'] ?? '').toString(),
+            year: int.tryParse(feature['year']?.toString() ?? ''),
           ),
         );
       }

@@ -123,6 +123,8 @@ void main() {
         await tester.tap(find.byTooltip('Search all categories'));
         await tester.pumpAndSettle();
         expect(find.byType(CatalogSearchScreen), findsOneWidget);
+        await tester.tap(find.byType(TextField));
+        await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), 'ANOTHER title');
         await tester.pumpAndSettle();
         expect(find.text('Another category title'), findsOneWidget);
@@ -137,7 +139,10 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text('Another category title'));
         await tester.pumpAndSettle();
-        expect(find.text('Play'), findsOneWidget);
+        expect(
+          find.text(type == ContentType.movies ? 'Play Movie' : 'Play S1 E1'),
+          findsOneWidget,
+        );
       },
     );
   }
@@ -156,8 +161,8 @@ void main() {
     expect(find.text('Example title'), findsOneWidget);
     await tester.tap(find.text('Example title'));
     await tester.pumpAndSettle();
-    expect(find.text('Movie synopsis'), findsOneWidget);
-    expect(find.text('Play'), findsOneWidget);
+    expect(find.text('Movie synopsis'), findsWidgets);
+    expect(find.text('Play Movie'), findsOneWidget);
     await tester.tap(find.byType(BackButton).first);
     await tester.pumpAndSettle();
     expect(find.text('Example title'), findsOneWidget);
@@ -179,6 +184,6 @@ void main() {
     expect(find.text('Series synopsis'), findsOneWidget);
     expect(find.text('Season 1'), findsOneWidget);
     expect(find.text('1. Pilot'), findsOneWidget);
-    expect(find.text('Play'), findsOneWidget);
+    expect(find.text('Play S1 E1'), findsOneWidget);
   });
 }

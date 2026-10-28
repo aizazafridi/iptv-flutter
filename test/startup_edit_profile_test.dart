@@ -61,7 +61,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Edit Alex'));
+      await tester.tap(find.text('Manage Profiles'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Alex'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Edit profile'));
       await tester.pumpAndSettle();
       final fields = tester
           .widgetList<TextFormField>(find.byType(TextFormField))
@@ -70,7 +74,7 @@ void main() {
       await tester.ensureVisible(find.text('Save changes'));
       await tester.tap(find.text('Save changes'));
       await tester.pumpAndSettle();
-      expect(find.text("Who's watching?"), findsOneWidget);
+      expect(find.text('Manage profiles'), findsOneWidget);
       expect(session.account, isNull);
       expect(connections, before);
       expect(session.profiles.single.id, id);

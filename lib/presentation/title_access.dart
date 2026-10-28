@@ -11,7 +11,7 @@ Future<bool> requestTitleAccess(
 ) async {
   final locks = CategoryLocks.forProvider(provider);
   await locks.load();
-  if (!context.mounted) return false;
+  if (!context.mounted || !locks.allowsItem(item)) return false;
   if (!locks.titleLocked(item)) return true;
   final pin = await showDialog<String>(
     context: context,

@@ -34,3 +34,11 @@ abstract interface class CompletionPlaybackEngine {
 abstract interface class AudioPlaybackEngine {
   Future<void> setVolume(double volume);
 }
+
+/// Optional real audio-track discovery; independent of volume routing.
+abstract interface class AudioTrackPlaybackEngine {
+  Stream<List<SubtitleOption>> get audioTracks;
+  List<SubtitleOption> get currentAudioTracks;
+  String get selectedAudioTrack;
+  Future<void> selectAudioTrack(String id);
+}

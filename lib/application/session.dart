@@ -1,3 +1,4 @@
+import 'category_locks.dart';
 import 'recent_catalog_cache.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:math';
@@ -23,9 +24,22 @@ class Session extends ChangeNotifier {
   String? error;
   ProviderConfig? lastConfig;
   bool _disposed = false;
+  bool showProfileSelectionOnStartup = true;
+  String? lastProfileId;
+  Future<void> setShowProfileSelection(bool value) async {
+    await store.storage.write(
+      key: 'show_profile_selection',
+      value: value.toString(),
+    );
+    showProfileSelectionOnStartup = value;
+    _notify();
+  }
 
   Future<void> initialize() async {
     try {
+      showProfileSelectionOnStartup =
+          await store.storage.read(key: 'show_profile_selection') != 'false';
+      lastProfileId = await store.storage.read(key: 'last_selected_profile');
       final saved = await store.loadProfiles();
       if (_disposed) return;
       if (saved != null) {
@@ -65,6 +79,17 @@ class Session extends ChangeNotifier {
       error = 'Could not read saved accounts. Please retry.';
     }
     loading = false;
+    if (!showProfileSelectionOnStartup && profiles.isNotEmpty) {
+      final previous =
+          profiles.where((p) => p.id == lastProfileId).firstOrNull ??
+          profiles.first;
+      final locks = CategoryLocks(previous.id);
+      await locks.load();
+      if (!locks.profilePinRequired) {
+        await selectProfile(previous);
+        return;
+      }
+    }
     _notify();
   }
 
@@ -84,6 +109,7 @@ class Session extends ChangeNotifier {
     bool remember = true,
     String? name,
     int avatar = 0,
+    Future<void> Function(CategoryLocks)? configureProfile,
   }) async {
     if (loading && provider != null) return;
     final existing = profiles
@@ -110,6 +136,9 @@ class Session extends ChangeNotifier {
     IptvProvider? candidate;
     try {
       candidate = registry.create(configured);
+      if (configureProfile != null) {
+        await configureProfile(CategoryLocks.forProvider(candidate));
+      }
       final result = await candidate.connect();
       loadingProgress = 0.15;
       _notify();
@@ -144,6 +173,11 @@ class Session extends ChangeNotifier {
       provider = candidate;
       account = result;
       activeProfile = profile;
+      lastProfileId = profile.id;
+      await store.storage.write(
+        key: 'last_selected_profile',
+        value: profile.id,
+      );
       final types = [
         ContentType.movies,
         ContentType.series,
@@ -186,6 +220,7 @@ class Session extends ChangeNotifier {
     required String name,
     required int avatar,
     String? profileId,
+    Future<void> Function(CategoryLocks)? configureProfile,
   }) async {
     final original = profileId == null
         ? activeProfile
@@ -212,7 +247,16 @@ class Session extends ChangeNotifier {
       Account? result;
       if (changed && editingActive) {
         candidate = registry.create(configured);
+        if (configureProfile != null) {
+          await configureProfile(CategoryLocks.forProvider(candidate));
+        }
         result = await candidate.connect();
+      } else if (configureProfile != null) {
+        await configureProfile(
+          editingActive && provider != null
+              ? CategoryLocks.forProvider(provider!)
+              : CategoryLocks(original.id),
+        );
       }
       if (_disposed) {
         candidate?.dispose();
@@ -260,6 +304,9 @@ class Session extends ChangeNotifier {
         .where((entry) => entry.id != profile.id)
         .toList();
     try {
+      final scope = WatchHistory.scopeFor(profile.config);
+      await store.storage.delete(key: 'live_favourite_groups:$scope');
+      await store.storage.delete(key: 'my_list:$scope');
       await store.saveProfiles(remaining);
       profiles = remaining;
       error = null;

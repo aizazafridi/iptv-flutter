@@ -7,9 +7,14 @@ class ActivationTextField extends StatefulWidget {
   final InputDecoration? decoration;
   final ValueChanged<String>? onChanged;
   final bool autofocus, enabled;
+  final FocusNode? focusNode;
+  final VoidCallback? onNavigateUp, onNavigateDown;
   const ActivationTextField({
     super.key,
     this.controller,
+    this.focusNode,
+    this.onNavigateUp,
+    this.onNavigateDown,
     this.decoration,
     this.onChanged,
     this.autofocus = false,
@@ -21,8 +26,9 @@ class ActivationTextField extends StatefulWidget {
 
 class _ActivationTextFieldState extends State<ActivationTextField> {
   bool editing = false;
-  late final focus = FocusNode(
-    onKeyEvent: (node, event) {
+  late final focus = widget.focusNode ?? FocusNode();
+  void configureFocus() {
+    focus.onKeyEvent = (node, event) {
       if (event is! KeyDownEvent || editing) return KeyEventResult.ignored;
       if (event.logicalKey == LogicalKeyboardKey.select ||
           event.logicalKey == LogicalKeyboardKey.enter) {
@@ -30,16 +36,25 @@ class _ActivationTextFieldState extends State<ActivationTextField> {
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-        node.nextFocus();
+        if (widget.onNavigateDown != null) {
+          widget.onNavigateDown!();
+        } else {
+          node.nextFocus();
+        }
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        node.previousFocus();
+        if (widget.onNavigateUp != null) {
+          widget.onNavigateUp!();
+        } else {
+          node.previousFocus();
+        }
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
-    },
-  );
+    };
+  }
+
   void beginEditing() {
     if (!widget.enabled) return;
     setState(() => editing = true);
@@ -59,14 +74,19 @@ class _ActivationTextFieldState extends State<ActivationTextField> {
   @override
   void initState() {
     super.initState();
-    focus.addListener(() {
-      if (!focus.hasFocus && editing && mounted) finish();
-    });
+    configureFocus();
+    focus.addListener(focusChanged);
+  }
+
+  void focusChanged() {
+    if (!focus.hasFocus && editing && mounted) finish();
   }
 
   @override
   void dispose() {
-    focus.dispose();
+    focus.removeListener(focusChanged);
+    focus.onKeyEvent = null;
+    if (widget.focusNode == null) focus.dispose();
     super.dispose();
   }
 

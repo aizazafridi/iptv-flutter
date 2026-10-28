@@ -21,15 +21,20 @@ class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
   @override
   Future<List<Category>> getCategories(ContentType type) async {
     await locks.load();
-    return (await delegate.getCategories(
-      type,
-    )).where((category) => !locks.hidden(category)).toList();
+    return (await delegate.getCategories(type))
+        .where(
+          (category) =>
+              !locks.hidden(category) && locks.allowsCategory(category),
+        )
+        .toList();
   }
 
   @override
   Future<List<ContentItem>> getItems(Category category) async {
     await locks.load();
-    if (locks.isLocked(category) || locks.hidden(category)) {
+    if (!locks.allowsCategory(category) ||
+        locks.isLocked(category) ||
+        locks.hidden(category)) {
       throw const ProviderException(
         'This category is locked. Enter its password to access it.',
       );
@@ -80,6 +85,11 @@ class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
 
   Future<void> _checkItem(ContentItem item) async {
     await locks.load();
+    if (!locks.allowsItem(item)) {
+      throw const ProviderException(
+        'This title is not allowed in this Kids profile.',
+      );
+    }
     if (locks.titleHidden(item)) {
       throw const ProviderException('This title is hidden.');
     }

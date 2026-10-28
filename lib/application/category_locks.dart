@@ -22,6 +22,48 @@ class CategoryLocks extends ChangeNotifier {
   final FlutterSecureStorage storage;
   CategoryLocks(this.scope, {this.storage = const FlutterSecureStorage()});
   String _password = '';
+  bool kidsProfile = false, profilePinRequired = false;
+  Set<String> allowedKidsCategories = {};
+  bool allowsCategory(Category category) =>
+      !kidsProfile || allowedKidsCategories.contains(key(category));
+  bool allowsItem(ContentItem item) =>
+      !kidsProfile ||
+      (item.categoryId != null &&
+          allowsCategory(Category(item.categoryId!, '', item.type)));
+  Future<void> setProfilePolicy({
+    required bool kids,
+    required bool requirePin,
+    required Set<String> allowed,
+    String pin = '',
+  }) async {
+    await load();
+    if ((kids || requirePin) &&
+        (!hasPassword || needsPinUpgrade) &&
+        !RegExp(r'^[0-9]{6}$').hasMatch(pin)) {
+      throw const ProviderException(
+        'Set a six-digit PIN to protect this profile.',
+      );
+    }
+    if (pin.isNotEmpty && !RegExp(r'^[0-9]{6}$').hasMatch(pin)) {
+      throw const ProviderException('Use exactly six digits for the PIN.');
+    }
+    final oldKids = kidsProfile, oldRequired = profilePinRequired;
+    final oldAllowed = allowedKidsCategories;
+    kidsProfile = kids;
+    profilePinRequired = requirePin;
+    allowedKidsCategories = Set.of(allowed);
+    try {
+      await _save(pin.isEmpty ? _password : pin, _locked);
+      if (pin.isNotEmpty) _password = pin;
+    } catch (_) {
+      kidsProfile = oldKids;
+      profilePinRequired = oldRequired;
+      allowedKidsCategories = oldAllowed;
+      rethrow;
+    }
+    notifyListeners();
+  }
+
   Set<String> _locked = {};
   Set<String> _titles = {}, _hidden = {}, _hiddenTitles = {};
   final Set<String> _unlockedTitles = {};
@@ -50,6 +92,11 @@ class CategoryLocks extends ChangeNotifier {
     if (saved != null) {
       final value = jsonDecode(saved) as Map<String, dynamic>;
       _password = value['password'] as String? ?? '';
+      kidsProfile = value['kidsProfile'] == true;
+      profilePinRequired = value['profilePinRequired'] == true;
+      allowedKidsCategories = (value['allowedKidsCategories'] as List? ?? [])
+          .cast<String>()
+          .toSet();
       _locked = (value['categories'] as List? ?? []).cast<String>().toSet();
       _titles = (value['titles'] as List? ?? []).cast<String>().toSet();
       _hidden = (value['hidden'] as List? ?? []).cast<String>().toSet();
@@ -62,6 +109,9 @@ class CategoryLocks extends ChangeNotifier {
     key: 'category_locks:$scope',
     value: jsonEncode({
       'password': password,
+      'kidsProfile': kidsProfile,
+      'profilePinRequired': profilePinRequired,
+      'allowedKidsCategories': allowedKidsCategories.toList(),
       'categories': locked.toList(),
       'titles': _titles.toList(),
       'hidden': _hidden.toList(),
@@ -201,7 +251,7 @@ class CategoryLocks extends ChangeNotifier {
   Future<List<ContentItem>> visibleItems(List<ContentItem> items) async {
     await load();
     return items.where((item) {
-      if (titleHidden(item)) return false;
+      if (!allowsItem(item) || titleHidden(item)) return false;
       if (item.categoryId != null &&
           hidden(Category(item.categoryId!, '', item.type))) {
         return false;

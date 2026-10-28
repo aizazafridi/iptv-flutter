@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../application/my_list.dart';
+import 'live_favourite_dialogs.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 
@@ -7,11 +8,15 @@ class MyListButton extends StatefulWidget {
   final IptvProvider provider;
   final ContentItem item;
   final bool compact;
+  final bool showLabel;
+  final ButtonStyle? style;
   const MyListButton({
     super.key,
     required this.provider,
     required this.item,
     this.compact = false,
+    this.showLabel = false,
+    this.style,
   });
   @override
   State<MyListButton> createState() => _MyListButtonState();
@@ -59,7 +64,11 @@ class _MyListButtonState extends State<MyListButton> {
     if (busy) return;
     setState(() => busy = true);
     try {
-      await list.toggle(widget.item);
+      if (widget.item.type == ContentType.live) {
+        await showLiveFavouriteDialog(context, widget.provider, widget.item);
+      } else {
+        await list.toggle(widget.item);
+      }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -75,17 +84,30 @@ class _MyListButtonState extends State<MyListButton> {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: list,
-    builder: (_, _) => IconButton(
-      focusNode: buttonFocus,
-      tooltip: list.contains(widget.item)
-          ? 'Remove from My list'
-          : 'Add to My list',
-      onPressed: toggle,
-      style: myListControlStyle(compact: widget.compact),
-      icon: Icon(
-        list.contains(widget.item) ? Icons.check_rounded : Icons.add_rounded,
-      ),
-    ),
+    builder: (_, _) => widget.showLabel
+        ? TextButton.icon(
+            focusNode: buttonFocus,
+            onPressed: busy ? null : toggle,
+            style: widget.style,
+            icon: Icon(
+              list.contains(widget.item) ? Icons.check : Icons.add,
+              color: Colors.white,
+              size: 20,
+            ),
+            label: const Text('My List'),
+          )
+        : IconButton(
+            focusNode: buttonFocus,
+            tooltip: list.contains(widget.item)
+                ? 'Remove from My list'
+                : 'Add to My list',
+            onPressed: toggle,
+            style: myListControlStyle(compact: widget.compact),
+            icon: Icon(
+              list.contains(widget.item) ? Icons.check : Icons.add,
+              color: Colors.white,
+            ),
+          ),
   );
 }
 

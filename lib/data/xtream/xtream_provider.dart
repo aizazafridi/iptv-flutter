@@ -50,6 +50,13 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
         : null;
   }
 
+  double? _rating(dynamic value) {
+    final number = double.tryParse(_text(value));
+    return number != null && number.isFinite && number >= 0 && number <= 10
+        ? number
+        : null;
+  }
+
   int _number(dynamic value) => int.tryParse(_text(value)) ?? 0;
 
   DateTime? _timestamp(dynamic value) {
@@ -137,6 +144,15 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
             artwork: _image(row['stream_icon'] ?? row['cover']),
             extension: row['container_extension']?.toString(),
             categoryId: row['category_id']?.toString() ?? categoryId,
+            rating: _rating(row['rating']),
+            releaseYear: int.tryParse(
+              RegExp(r'\b(?:19|20)\d{2}\b')
+                      .firstMatch(
+                        _text(row['releaseDate'] ?? row['releasedate']),
+                      )
+                      ?.group(0) ??
+                  '',
+            ),
             addedAt:
                 _timestamp(row['added']) ??
                 (type == ContentType.series
@@ -147,9 +163,28 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
         .toList();
   }
 
+  Uri? _trailer(dynamic value) {
+    final text = _text(value).trim();
+    if (text.isEmpty) return null;
+    final uri = Uri.tryParse(text);
+    if (uri != null &&
+        (uri.scheme == 'https' || uri.scheme == 'http') &&
+        uri.host.isNotEmpty) {
+      return uri;
+    }
+    if (RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(text)) {
+      return Uri.https('www.youtube.com', '/watch', {'v': text});
+    }
+    return null;
+  }
+
   MediaDetails _details(ContentItem item, Map<String, dynamic> info) {
     return MediaDetails(
       item: item,
+      tmdbId: int.tryParse(_text(info['tmdb_id'] ?? info['tmdb'])),
+      imdbId: RegExp(
+        r'tt\d{7,10}',
+      ).firstMatch(_text(info['imdb_id'] ?? info['imdb']))?.group(0),
       synopsis: _text(info['plot'] ?? info['description']),
       genre: _text(info['genre']),
       cast: _text(info['cast']),
@@ -157,6 +192,14 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
       rating: _text(info['rating']),
       releaseDate: _text(info['releasedate'] ?? info['releaseDate']),
       duration: _text(info['duration']),
+      ageRating: _text(info['age_rating'] ?? info['mpaa_rating']),
+      language: _text(info['language']),
+      backdrop: _image(
+        info['backdrop_path'] is List
+            ? (info['backdrop_path'] as List).firstOrNull
+            : info['backdrop_path'],
+      ),
+      trailer: _trailer(info['youtube_trailer'] ?? info['trailer']),
       artwork:
           _image(info['movie_image']) ??
           _image(info['cover_big']) ??
@@ -217,20 +260,47 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
         params: {'series_id': series.id},
       ),
     );
-    final info = _map(data['info']);
+    final info = data['info'] is Map
+        ? Map<String, dynamic>.from(data['info'] as Map)
+        : <String, dynamic>{};
     final raw = data['episodes'];
-    final groups = raw == null || (raw is List && raw.isEmpty)
-        ? <String, dynamic>{}
-        : _map(raw);
+    final groups = <String, dynamic>{};
+    if (raw is Map) {
+      groups.addAll(Map<String, dynamic>.from(raw));
+    } else if (raw is List) {
+      for (final row in raw.whereType<Map<String, dynamic>>()) {
+        final key = _text(row['season']);
+        (groups.putIfAbsent(key, () => <dynamic>[]) as List).add(row);
+      }
+    }
     final episodes = <Episode>[];
     for (final group in groups.entries) {
-      for (final rawEpisode in _list(group.value)) {
-        final row = _map(rawEpisode);
+      for (final rawEpisode
+          in group.value is List ? group.value as List : const []) {
+        if (rawEpisode is! Map<String, dynamic>) continue;
+        final row = rawEpisode;
+        if (_text(row['id']).isEmpty) continue;
+        final episodeInfo = row['info'] is Map ? row['info'] as Map : const {};
+        final seconds = _number(episodeInfo['duration_secs']);
+        final duration = _text(episodeInfo['duration']).isNotEmpty
+            ? _text(episodeInfo['duration'])
+            : seconds > 0
+            ? '${seconds ~/ 3600}:${(seconds ~/ 60 % 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}'
+            : '';
         episodes.add(
           Episode(
             id: _required(row, 'id'),
-            title: _text(row['title']),
-            artwork: _episodeArtwork(row) ?? _details(series, info).artwork,
+            title: _text(row['title']).isEmpty
+                ? 'Episode ${episodes.length + 1}'
+                : _text(row['title']),
+            artwork: _episodeArtwork(row) ?? _details(series, info).backdrop,
+            synopsis: _text(episodeInfo['plot'] ?? row['plot']),
+            duration: duration,
+            airDate: _text(
+              episodeInfo['air_date'] ??
+                  episodeInfo['releasedate'] ??
+                  row['air_date'],
+            ),
             season: _number(row['season'] ?? group.key),
             number: _number(row['episode_num']),
             extension: _text(row['container_extension']).isEmpty

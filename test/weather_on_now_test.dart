@@ -1,3 +1,4 @@
+import 'package:iptv_flutter/data/last_live_channel.dart';
 import 'package:iptv_flutter/presentation/weather_scene_painter.dart';
 import 'package:iptv_flutter/presentation/raincoat_weather_painter.dart';
 import 'package:iptv_flutter/presentation/browse_screen.dart';
@@ -7,7 +8,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:iptv_flutter/data/weather_service.dart';
 import 'package:iptv_flutter/presentation/weather_panel.dart';
 import 'package:iptv_flutter/presentation/on_now_panel.dart';
-import 'package:iptv_flutter/application/my_list.dart';
 import 'package:iptv_flutter/domain/models.dart';
 import 'tv_guide_screen_test.dart' show GuideProvider;
 
@@ -31,6 +31,20 @@ WeatherService fixture() => WeatherService(
         },
 );
 void main() {
+  testWidgets('compact weather uses degree and middle-dot Unicode characters', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: WeatherPanel(compact: true, service: fixture())),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('12\u00b0C \u00b7 Sample city'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('weather character animation advances', (tester) async {
     tester.platformDispatcher.accessibilityFeaturesTestValue =
         FakeAccessibilityFeatures(disableAnimations: false);
@@ -154,7 +168,7 @@ void main() {
       expect(find.text('Overcast'), findsOneWidget);
       expect(tester.takeException(), isNull);
       final provider = GuideProvider();
-      await MyList.forProvider(provider).toggle(
+      await LastLiveChannel.forProvider(provider).save(
         const ContentItem(
           id: '1',
           name: 'Channel Alpha',
@@ -180,6 +194,43 @@ void main() {
       );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'On Now fits only the three most recent channels without scrolling',
+    (tester) async {
+      FlutterSecureStorage.setMockInitialValues({});
+      final provider = GuideProvider();
+      for (var i = 1; i <= 5; i++) {
+        await LastLiveChannel.forProvider(provider).save(
+          ContentItem(id: '$i', name: 'Recent $i', type: ContentType.live),
+        );
+      }
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 340,
+              height: 210,
+              child: OnNowPanel(provider: provider, onOpen: (_) async {}),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(ListTile), findsNWidgets(3));
+      expect(find.text('Recent 5'), findsOneWidget);
+      expect(find.text('Recent 4'), findsOneWidget);
+      expect(find.text('Recent 3'), findsOneWidget);
+      expect(find.text('Recent 2'), findsNothing);
+      expect(find.byType(Scrollable), findsNothing);
+      expect(
+        tester.getBottomRight(find.text('Recent 3')).dy,
+        lessThanOrEqualTo(210),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      provider.dispose();
     },
   );
 }

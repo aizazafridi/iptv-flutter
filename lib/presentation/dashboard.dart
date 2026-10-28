@@ -1,3 +1,7 @@
+import 'continue_watching_artwork.dart';
+import 'series_catalog_screen.dart';
+import 'package:flutter/services.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'live_tv_launch_screen.dart';
 import 'on_now_panel.dart';
 import 'weather_panel.dart';
@@ -20,26 +24,31 @@ import 'lock_password_dialog.dart';
 import 'title_access.dart';
 import 'search_screen.dart';
 import 'smooth_page_route.dart';
-import 'my_list_button.dart';
 
 const _accent = Color(0xff64b5f6);
-const _panel = Color(0xff191d24);
 
 class StreamoraDashboard extends StatefulWidget {
   final Session session;
   final AppAppearance appearance;
   final VoidCallback onSettings;
+  final List<Widget> headerActions;
   const StreamoraDashboard({
     super.key,
     required this.session,
     required this.appearance,
     required this.onSettings,
+    this.headerActions = const [],
   });
   @override
   State<StreamoraDashboard> createState() => _StreamoraDashboardState();
 }
 
-class _StreamoraDashboardState extends State<StreamoraDashboard> {
+class _StreamoraDashboardState extends State<StreamoraDashboard>
+    with SingleTickerProviderStateMixin {
+  late final seriesFade = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
   IptvProvider get provider => widget.session.provider!;
   late final history = WatchHistory.forProvider(provider);
   late final parental = CategoryLocks.forProvider(provider);
@@ -58,9 +67,168 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
   Timer? refresh;
   int guideVersion = 0;
   bool loadingGuide = false;
+  bool collapsed = false;
+  DateTime? exitPressed;
+  bool seriesActive = false, seriesCreated = false;
+  bool moviesActive = false, moviesCreated = false;
+  final movieCatalog = GlobalKey<SeriesCatalogScreenState>();
+  SeriesCatalogScreenState? get activeCatalog =>
+      moviesActive ? movieCatalog.currentState : seriesCatalog.currentState;
+  void openMovies() {
+    seriesFade.forward(from: 0);
+    setState(() {
+      moviesActive = true;
+      moviesCreated = true;
+      seriesActive = false;
+      collapsed = true;
+      lastNav = 'Movies';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) movieCatalog.currentState?.focusEntry();
+    });
+  }
+
+  final seriesCatalog = GlobalKey<SeriesCatalogScreenState>();
+  void openSeries() {
+    seriesFade.forward(from: 0);
+    setState(() {
+      seriesActive = true;
+      moviesActive = false;
+      seriesCreated = true;
+      collapsed = true;
+      lastNav = 'Series';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) seriesCatalog.currentState?.focusEntry();
+    });
+  }
+
+  void openHome() {
+    setState(() {
+      seriesActive = false;
+      moviesActive = false;
+      collapsed = false;
+    });
+    navNode('Home').requestFocus();
+  }
+
+  final contentScroll = ScrollController();
+  final navNodes = <String, FocusNode>{};
+  final railFocus = FocusNode(debugLabel: 'dashboard sidebar');
+  final contentFocus = FocusNode(debugLabel: 'dashboard content');
+  void syncSidebar() {
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+    if (!railFocus.hasFocus && !contentFocus.hasFocus) return;
+    final next = !railFocus.hasFocus;
+    if (collapsed != next) setState(() => collapsed = next);
+  }
+
+  final liveFocus = FocusNode(debugLabel: 'dashboard Live TV');
+  final onNowFocus = FocusNode(debugLabel: 'dashboard On Now');
+  final searchFocus = FocusNode(debugLabel: 'dashboard Search');
+  final headerNodes = <int, FocusNode>{};
+  FocusNode headerNode(int index) => headerNodes.putIfAbsent(
+    index,
+    () => FocusNode(debugLabel: 'dashboard header $index'),
+  );
+  List<int> get headerIndices => [
+    for (var i = 0; i < widget.headerActions.length; i++)
+      if (widget.headerActions[i] is IconButton ||
+          widget.headerActions[i] is PopupMenuButton<String>)
+        i,
+  ];
+  void focusHeader(int index) {
+    final node = headerNode(index);
+    final target = node.descendants
+        .where((n) => n.canRequestFocus && !n.skipTraversal)
+        .firstOrNull;
+    (target ?? node).requestFocus();
+  }
+
+  Widget headerAction(int index) => Focus(
+    focusNode: headerNode(index),
+    canRequestFocus: false,
+    onKeyEvent: (_, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+        return KeyEventResult.ignored;
+      }
+      final position = headerIndices.indexOf(index);
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        if (position > 0) {
+          focusHeader(headerIndices[position - 1]);
+        } else {
+          searchFocus.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        if (position + 1 < headerIndices.length) {
+          focusHeader(headerIndices[position + 1]);
+        }
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        if (provider.supportedTypes.contains(ContentType.live)) {
+          onNowFocus.requestFocus();
+        } else {
+          returnToNavigation();
+        }
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: widget.headerActions[index],
+  );
+  String lastNav = 'Home';
+  List<String> get navigation => [
+    'Home',
+    if (provider.supportedTypes.contains(ContentType.live)) 'Live TV',
+    if (provider.supportedTypes.contains(ContentType.movies)) 'Movies',
+    if (provider.supportedTypes.contains(ContentType.series)) 'Series',
+    if (provider.supportedTypes.contains(ContentType.live)) 'TV Guide',
+  ];
+  FocusNode navNode(String title) => navNodes.putIfAbsent(
+    title,
+    () => FocusNode(debugLabel: 'dashboard nav $title'),
+  );
+  void returnToNavigation() => navNode(lastNav).requestFocus();
+  KeyEventResult navigationKey(String title, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final index = navigation.indexOf(title);
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+        event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      final direction = event.logicalKey == LogicalKeyboardKey.arrowDown
+          ? 1
+          : -1;
+      final next = (index + direction).clamp(0, navigation.length - 1);
+      navNode(navigation[next]).requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      if (seriesActive || moviesActive) {
+        activeCatalog?.focusEntry();
+      } else if (provider.supportedTypes.contains(ContentType.live)) {
+        liveFocus.requestFocus();
+      } else {
+        searchFocus.requestFocus();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) navNode('Home').requestFocus();
+    });
+    FocusManager.instance.addListener(syncSidebar);
     history.addListener(historyChanged);
     parental.addListener(historyChanged);
     unawaited(
@@ -74,7 +242,21 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
 
   @override
   void dispose() {
+    FocusManager.instance.removeListener(syncSidebar);
+    railFocus.dispose();
+    contentFocus.dispose();
+    for (final node in navNodes.values) {
+      node.dispose();
+    }
+    for (final node in headerNodes.values) {
+      node.dispose();
+    }
+    liveFocus.dispose();
+    onNowFocus.dispose();
+    searchFocus.dispose();
+    contentScroll.dispose();
     refresh?.cancel();
+    seriesFade.dispose();
     history.removeListener(historyChanged);
     parental.removeListener(historyChanged);
     super.dispose();
@@ -98,7 +280,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
   }
 
   Future<List<WatchEntry>> loadHistory() async {
-    final entries = await history.entries();
+    final entries = (await history.entries()).toList()
+      ..sort((a, b) => b.updated.compareTo(a.updated));
     final allowed = await visible(entries.map((e) => e.item).toList());
     await parental.load();
     allowed.removeWhere(
@@ -109,7 +292,13 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
               (parental.configured(Category(item.categoryId!, '', item.type)) ||
                   parental.hidden(Category(item.categoryId!, '', item.type)))),
     );
+    final seenSeries = <String>{};
     return entries
+        .where(
+          (entry) =>
+              entry.item.type != ContentType.series ||
+              seenSeries.add(entry.item.id),
+        )
         .where(
           (e) => allowed.any((i) => i.id == e.item.id && i.type == e.item.type),
         )
@@ -260,35 +449,6 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
     }
   }
 
-  Future<void> favourites() async {
-    final type = await chooseType('My list');
-    if (type == null || !mounted) return;
-    final rows = await visible(await MyList.forProvider(provider).items(type));
-    if (!mounted) return;
-    final selected = await showDialog<ContentItem>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text('My list - ${type.label}'),
-        children: rows.isEmpty
-            ? [
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('Your list is empty'),
-                ),
-              ]
-            : rows
-                  .map(
-                    (item) => SimpleDialogOption(
-                      onPressed: () => Navigator.pop(context, item),
-                      child: Text(item.name),
-                    ),
-                  )
-                  .toList(),
-      ),
-    );
-    if (selected != null && mounted) await openItem(selected);
-  }
-
   Future<void> guide() =>
       push(LiveTvLaunchScreen(provider: provider, openGuide: true));
   void search() => push(
@@ -322,177 +482,370 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
     VoidCallback action, {
     bool selected = false,
   }) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-    child: TextButton.icon(
-      onPressed: action,
-      style: TextButton.styleFrom(
-        alignment: Alignment.centerLeft,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        foregroundColor: selected ? Colors.black : Colors.white70,
-        backgroundColor: selected ? _accent : Colors.transparent,
-        minimumSize: const Size(double.infinity, 40),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        textStyle: const TextStyle(fontSize: 13),
-      ),
-      icon: Icon(icon, size: 17),
-      label: Text(title),
-    ),
-  );
-  Widget rail() => Container(
-    width: 172,
-    color: const Color(0xff0b0d11),
-    child: Column(
-      children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 22),
-          child: Text(
-            'Streamora',
-            style: TextStyle(
-              color: _accent,
-              fontSize: 21,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-        Expanded(
-          child: ListView(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+    child: Focus(
+      canRequestFocus: false,
+      onKeyEvent: (_, event) => navigationKey(title, event),
+      child: Tooltip(
+        message: title,
+        child: TextButton(
+          focusNode: navNode(title),
+          autofocus: title == 'Home',
+          onFocusChange: (focused) {
+            if (focused) {
+              lastNav = title;
+              final target = navNode(title).context;
+              if (target != null) Scrollable.ensureVisible(target);
+            }
+          },
+          onPressed: action,
+          style:
+              TextButton.styleFrom(
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                foregroundColor: Colors.white70,
+                backgroundColor: selected
+                    ? Colors.white.withValues(alpha: .06)
+                    : Colors.transparent,
+                minimumSize: const Size(double.infinity, 44),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ).copyWith(
+                foregroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.focused)
+                      ? Colors.black
+                      : Colors.white70,
+                ),
+                backgroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.focused)
+                      ? _accent
+                      : selected
+                      ? ((seriesActive || moviesActive)
+                            ? _accent.withValues(alpha: .2)
+                            : Colors.white.withValues(alpha: .06))
+                      : Colors.transparent,
+                ),
+              ),
+          child: Row(
             children: [
-              nav('Home', Icons.home_outlined, () {}, selected: true),
-              if (provider.supportedTypes.contains(ContentType.live)) ...[
-                nav(
-                  'Live TV',
-                  Icons.tv_outlined,
-                  () => browse(ContentType.live),
+              Icon(icon, size: 18),
+              if (!collapsed) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13),
+                  ),
                 ),
-                nav('TV Guide', Icons.view_list_outlined, guide),
               ],
-              if (provider.supportedTypes.contains(ContentType.movies))
-                nav(
-                  'Movies',
-                  Icons.movie_outlined,
-                  () => browse(ContentType.movies),
-                ),
-              if (provider.supportedTypes.contains(ContentType.series))
-                nav(
-                  'Series',
-                  Icons.video_library_outlined,
-                  () => browse(ContentType.series),
-                ),
-              nav('My list', Icons.check_circle_outline, favourites),
-              nav('Recordings', Icons.fiber_manual_record_outlined, recordings),
             ],
           ),
         ),
-        nav('Settings', Icons.settings_outlined, widget.onSettings),
-        const SizedBox(height: 12),
-      ],
+      ),
+    ),
+  );
+  Widget rail() => Focus(
+    focusNode: railFocus,
+    canRequestFocus: false,
+    child: AnimatedContainer(
+      key: const ValueKey('dashboard-sidebar'),
+      duration: const Duration(milliseconds: 170),
+      curve: Curves.easeOut,
+      width: collapsed
+          ? 76
+          : (MediaQuery.sizeOf(context).width / 1920 * 240).clamp(172.0, 250.0),
+      color: const Color(0xff0b0d11),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Text(
+              collapsed ? 'S' : 'Streamora',
+              style: const TextStyle(
+                color: _accent,
+                fontSize: 21,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              children: [
+                nav(
+                  'Home',
+                  Icons.home_outlined,
+                  openHome,
+                  selected: !seriesActive && !moviesActive,
+                ),
+                if (provider.supportedTypes.contains(ContentType.live)) ...[
+                  nav(
+                    'Live TV',
+                    Icons.tv_outlined,
+                    () => browse(ContentType.live),
+                  ),
+                ],
+                if (provider.supportedTypes.contains(ContentType.movies))
+                  nav(
+                    'Movies',
+                    Icons.movie_outlined,
+                    openMovies,
+                    selected: moviesActive,
+                  ),
+                if (provider.supportedTypes.contains(ContentType.series))
+                  nav(
+                    'Series',
+                    Icons.video_library_outlined,
+                    openSeries,
+                    selected: seriesActive,
+                  ),
+                if (provider.supportedTypes.contains(ContentType.live))
+                  nav('TV Guide', Icons.view_list_outlined, guide),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+      ),
     ),
   );
   EpgProgramme? get current =>
       programmes.where((p) => p.isCurrent(DateTime.now())).firstOrNull;
-  Widget livePanel() => Container(
-    decoration: BoxDecoration(
-      color: const Color(0xff202c3e),
-      borderRadius: BorderRadius.circular(16),
-    ),
-    clipBehavior: Clip.antiAlias,
-    child: LayoutBuilder(
-      builder: (context, size) {
-        final now = SizedBox(
-          height: 230,
+  double get livePanelHeight =>
+      (MediaQuery.sizeOf(context).height - 310).clamp(230.0, 260.0);
+
+  Widget livePanel() => LayoutBuilder(
+    builder: (context, size) {
+      final now = Container(
+        key: const ValueKey('dashboard-on-now'),
+        height: livePanelHeight,
+        decoration: BoxDecoration(
+          color: const Color(0xff171f2b),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Focus(
+          canRequestFocus: false,
+          onKeyEvent: (_, event) {
+            if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+              return KeyEventResult.ignored;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+              liveFocus.requestFocus();
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+              searchFocus.requestFocus();
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
           child: OnNowPanel(
+            entryFocusNode: onNowFocus,
             embedded: true,
             provider: provider,
             onOpen: selectFeature,
           ),
-        );
-        if (size.maxWidth < 480) return Column(children: [feature(), now]);
-        return Row(
-          children: [
-            Expanded(flex: 2, child: feature()),
-            const SizedBox(
-              height: 190,
-              child: VerticalDivider(width: 1, color: Colors.white12),
+        ),
+      );
+      final highlightedNow = ListenableBuilder(
+        listenable: onNowFocus,
+        child: now,
+        builder: (context, child) => DecoratedBox(
+          position: DecorationPosition.foreground,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: onNowFocus.hasFocus ? _accent : Colors.transparent,
+              width: 2,
             ),
-            Expanded(child: now),
-          ],
+          ),
+          child: child,
+        ),
+      );
+      if (size.maxWidth < 580) {
+        return Column(
+          children: [feature(), const SizedBox(height: 18), highlightedNow],
         );
-      },
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(flex: 3, child: feature()),
+          const SizedBox(width: 18),
+          Expanded(flex: 2, child: highlightedNow),
+        ],
+      );
+    },
+  );
+
+  Widget feature() => ListenableBuilder(
+    listenable: liveFocus,
+    child: featureContent(),
+    builder: (context, child) => AnimatedContainer(
+      key: const ValueKey('dashboard-live-focus-border'),
+      duration: const Duration(milliseconds: 170),
+      curve: Curves.easeOut,
+      foregroundDecoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: liveFocus.hasFocus ? _accent : Colors.transparent,
+          width: 2,
+        ),
+      ),
+      child: child,
     ),
   );
 
-  Widget feature() {
+  Widget featureContent() {
     final item = featured;
     final programme = current;
-    final fraction = programme == null
+    final seconds = programme?.end.difference(programme.start).inSeconds ?? 0;
+    final fraction = programme == null || seconds <= 0
         ? null
-        : (DateTime.now().difference(programme.start).inSeconds /
-                  programme.end.difference(programme.start).inSeconds)
+        : (DateTime.now().difference(programme.start).inSeconds / seconds)
               .clamp(0.0, 1.0);
     return Container(
-      height: 230,
-      padding: const EdgeInsets.all(20),
+      key: const ValueKey('dashboard-live-feature'),
+      height: livePanelHeight,
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.transparent,
+        gradient: const LinearGradient(
+          colors: [Color(0xff1c334f), Color(0xff132135)],
+        ),
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          const Row(
-            children: [
-              Icon(Icons.circle, size: 7, color: Colors.redAccent),
-              SizedBox(width: 6),
-              Text(
-                'LIVE TV',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          const Spacer(),
-          Text(
-            item?.name ?? 'Live TV',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            programme?.title ??
-                (loadingGuide
-                    ? 'Loading programme guide...'
-                    : 'Discover your live channels'),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          if (fraction != null)
-            LinearProgressIndicator(
-              value: fraction,
-              minHeight: 4,
-              color: _accent,
-              backgroundColor: Colors.white12,
-            ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              FilledButton.icon(
-                onPressed: item == null
-                    ? () => browse(ContentType.live)
-                    : () => openItem(item),
-                style: FilledButton.styleFrom(
-                  backgroundColor: _accent,
-                  foregroundColor: Colors.black,
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.circle, size: 7, color: Colors.redAccent),
+                    SizedBox(width: 7),
+                    Text(
+                      'LIVE TV',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
-                icon: const Icon(Icons.play_arrow, size: 18),
-                label: const Text('Watch now'),
-              ),
-              if (item != null) ...[
-                const SizedBox(width: 12),
-                MyListButton(provider: provider, item: item, compact: true),
+                const Spacer(),
+                Text(
+                  item?.name ?? 'Live TV',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  programme?.title ??
+                      (loadingGuide
+                          ? 'Loading programme guide...'
+                          : 'Discover your live channels'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (fraction != null)
+                  LinearProgressIndicator(
+                    value: fraction,
+                    minHeight: 3,
+                    color: _accent,
+                    backgroundColor: Colors.white12,
+                  ),
+                const SizedBox(height: 12),
+                Focus(
+                  canRequestFocus: false,
+                  onKeyEvent: (_, event) {
+                    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                      return KeyEventResult.ignored;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                      onNowFocus.requestFocus();
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                      returnToNavigation();
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                      searchFocus.requestFocus();
+                      return KeyEventResult.handled;
+                    }
+                    return KeyEventResult.ignored;
+                  },
+                  child: FilledButton.icon(
+                    focusNode: liveFocus,
+                    onPressed: item == null
+                        ? () => browse(ContentType.live)
+                        : () => openItem(item),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                    icon: const Icon(Icons.play_arrow, size: 20),
+                    label: const Text('Watch Live', maxLines: 1),
+                  ),
+                ),
               ],
-            ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 2,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 128,
+                    maxHeight: 128,
+                  ),
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Container(
+                      key: const ValueKey('dashboard-channel-artwork'),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: .06),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: item?.artwork == null
+                          ? const Icon(
+                              Icons.live_tv_rounded,
+                              size: 48,
+                              color: Colors.white54,
+                            )
+                          : CachedNetworkImage(
+                              imageUrl: item!.artwork.toString(),
+                              fit: BoxFit.contain,
+                              memCacheWidth: 320,
+                              maxWidthDiskCache: 320,
+                              errorWidget: (_, _, _) => const Icon(
+                                Icons.live_tv_rounded,
+                                size: 48,
+                                color: Colors.white54,
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -508,12 +861,12 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
         children: [
           const Text(
             'Continue watching',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           if (entries.isEmpty)
             const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
+              padding: EdgeInsets.symmetric(vertical: 20),
               child: Text(
                 'Your unfinished movies and episodes will appear here.',
                 style: TextStyle(color: Colors.white54),
@@ -521,70 +874,54 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
             )
           else
             SizedBox(
-              height: 155,
+              height: 160,
               child: ListView.separated(
+                key: const PageStorageKey('dashboard-history'),
                 scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.all(5),
                 itemCount: entries.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 14),
                 itemBuilder: (_, index) {
                   final entry = entries[index];
-                  return SizedBox(
-                    width: 200,
-                    child: InkWell(
+                  final remaining =
+                      ((entry.duration - entry.position).inSeconds / 60)
+                          .ceil()
+                          .clamp(0, 99999);
+                  return Focus(
+                    canRequestFocus: false,
+                    onKeyEvent: (_, event) {
+                      if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                        return KeyEventResult.ignored;
+                      }
+                      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                        if (provider.supportedTypes.contains(
+                          ContentType.live,
+                        )) {
+                          liveFocus.requestFocus();
+                        } else {
+                          searchFocus.requestFocus();
+                        }
+                        if (contentScroll.hasClients) contentScroll.jumpTo(0);
+                        return KeyEventResult.handled;
+                      }
+                      if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+                          index == 0) {
+                        returnToNavigation();
+                        return KeyEventResult.handled;
+                      }
+                      return KeyEventResult.ignored;
+                    },
+                    child: _DashboardTitleCard(
+                      key: ValueKey('${entry.item.type}:${entry.item.id}'),
+                      item: entry.item,
                       onTap: () => openItem(entry.item),
-                      borderRadius: BorderRadius.circular(10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: SizedBox(
-                              height: 100,
-                              width: 200,
-                              child: entry.item.artwork == null
-                                  ? const ColoredBox(
-                                      color: _panel,
-                                      child: Icon(Icons.movie_outlined),
-                                    )
-                                  : Image.network(
-                                      entry.item.artwork.toString(),
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, _, _) =>
-                                          const ColoredBox(
-                                            color: _panel,
-                                            child: Icon(Icons.movie_outlined),
-                                          ),
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          LinearProgressIndicator(
-                            minHeight: 3,
-                            color: _accent,
-                            backgroundColor: Colors.white12,
-                            value: entry.duration.inSeconds > 0
-                                ? (entry.position.inSeconds /
-                                          entry.duration.inSeconds)
-                                      .clamp(0.0, 1.0)
-                                : 0,
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            entry.item.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          if (entry.episode != null)
-                            Text(
-                              'S${entry.episode!.season} E${entry.episode!.number}',
-                              style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 11,
-                              ),
-                            ),
-                        ],
-                      ),
+                      metadata:
+                          '${entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}$remaining min left',
+                      progress: entry.duration.inSeconds <= 0
+                          ? 0
+                          : (entry.position.inSeconds /
+                                    entry.duration.inSeconds)
+                                .clamp(0.0, 1.0),
                     ),
                   );
                 },
@@ -594,67 +931,328 @@ class _StreamoraDashboardState extends State<StreamoraDashboard> {
       );
     },
   );
-  @override
-  Widget build(BuildContext context) => ColoredBox(
-    color: const Color(0xff101217),
-    child: Row(
-      children: [
-        rail(),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) => SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+
+  Widget dashboardHeader() => LayoutBuilder(
+    builder: (context, size) {
+      final searchButton = Focus(
+        canRequestFocus: false,
+        onKeyEvent: (_, event) {
+          if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+            return KeyEventResult.ignored;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            if (headerIndices.isNotEmpty) focusHeader(headerIndices.first);
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            returnToNavigation();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+            if (provider.supportedTypes.contains(ContentType.live)) {
+              liveFocus.requestFocus();
+            } else {
+              returnToNavigation();
+            }
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: OutlinedButton.icon(
+          key: const ValueKey('dashboard-search'),
+          focusNode: searchFocus,
+          onPressed: search,
+          style: ButtonStyle(
+            foregroundColor: const WidgetStatePropertyAll(Colors.white),
+            backgroundColor: WidgetStateProperty.resolveWith(
+              (states) => states.contains(WidgetState.focused)
+                  ? const Color(0xff284f77)
+                  : Colors.transparent,
+            ),
+            side: WidgetStateProperty.resolveWith(
+              (states) => BorderSide(
+                color: states.contains(WidgetState.focused)
+                    ? _accent
+                    : Colors.white24,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.search, size: 18),
+          label: const Text('Search', style: TextStyle(fontSize: 12)),
+        ),
+      );
+      final weather = const SizedBox(
+        width: 200,
+        child: WeatherPanel(compact: true),
+      );
+      if (size.maxWidth >= 650) {
+        return Row(
+          children: [
+            searchButton,
+            const Spacer(),
+            weather,
+            for (var i = 0; i < widget.headerActions.length; i++)
+              headerAction(i),
+          ],
+        );
+      }
+      return Column(
+        children: [
+          Row(
+            children: [
+              searchButton,
+              const Spacer(),
+              Flexible(child: weather),
+            ],
+          ),
+          if (widget.headerActions.isNotEmpty)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                alignment: WrapAlignment.end,
                 children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: search,
-                      style: OutlinedButton.styleFrom(
-                        alignment: Alignment.centerLeft,
-                        foregroundColor: Colors.white54,
-                        backgroundColor: _panel,
-                        padding: const EdgeInsets.all(16),
-                        shape: const StadiumBorder(),
-                        side: const BorderSide(color: Colors.white12),
-                      ),
-                      icon: const Icon(Icons.search, size: 18),
-                      label: const Text(
-                        'Search channels, movies, series',
-                        style: TextStyle(fontSize: 13),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  if (constraints.maxWidth >= 650)
-                    Row(
+                  for (var i = 0; i < widget.headerActions.length; i++)
+                    headerAction(i),
+                ],
+              ),
+            ),
+        ],
+      );
+    },
+  );
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: false,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && !seriesActive && !moviesActive) {
+        final now = DateTime.now();
+        if (exitPressed != null &&
+            now.difference(exitPressed!) < const Duration(seconds: 2)) {
+          unawaited(SystemNavigator.pop());
+        } else {
+          exitPressed = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Press Back again to exit'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+      if (!didPop &&
+          (seriesActive || moviesActive) &&
+          activeCatalog?.handleBack() != true) {
+        openHome();
+      }
+    },
+    child: DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [Color(0xff17273b), Color(0xff0f1520), Color(0xff090d14)],
+        ),
+      ),
+      child: Row(
+        children: [
+          rail(),
+          Expanded(
+            child: Focus(
+              focusNode: contentFocus,
+              canRequestFocus: false,
+              child: IndexedStack(
+                index: moviesActive
+                    ? 2
+                    : seriesActive
+                    ? 1
+                    : 0,
+                children: [
+                  SingleChildScrollView(
+                    controller: contentScroll,
+                    key: const PageStorageKey('dashboard-scroll'),
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(child: livePanel()),
-                        const SizedBox(width: 16),
-                        SizedBox(
-                          width: constraints.maxWidth >= 1000 ? 260 : 220,
-                          child: const WeatherPanel(),
-                        ),
+                        dashboardHeader(),
+                        const SizedBox(height: 14),
+                        if (provider.supportedTypes.contains(
+                          ContentType.live,
+                        )) ...[
+                          livePanel(),
+                          const SizedBox(height: 16),
+                        ],
+                        continueWatching(),
                       ],
-                    )
-                  else ...[
-                    livePanel(),
-                    const SizedBox(height: 16),
-                    const Align(
-                      alignment: Alignment.centerRight,
-                      child: SizedBox(width: 300, child: WeatherPanel()),
                     ),
-                  ],
-                  const SizedBox(height: 22),
-                  continueWatching(),
+                  ),
+                  if (seriesCreated)
+                    TickerMode(
+                      enabled: seriesActive,
+                      child: FadeTransition(
+                        opacity: seriesFade.drive(
+                          CurveTween(curve: Curves.easeOut),
+                        ),
+                        child: SeriesCatalogScreen(
+                          key: seriesCatalog,
+                          provider: provider,
+                          onNavigation: () => navNode('Series').requestFocus(),
+                          onSettings: widget.onSettings,
+                          headerActions: widget.headerActions,
+                        ),
+                      ),
+                    )
+                  else
+                    const SizedBox.shrink(),
+                  if (moviesCreated)
+                    TickerMode(
+                      enabled: moviesActive,
+                      child: FadeTransition(
+                        opacity: seriesFade.drive(
+                          CurveTween(curve: Curves.easeOut),
+                        ),
+                        child: SeriesCatalogScreen(
+                          key: movieCatalog,
+                          type: ContentType.movies,
+                          provider: provider,
+                          onNavigation: () => navNode('Movies').requestFocus(),
+                          onSettings: widget.onSettings,
+                          headerActions: widget.headerActions,
+                        ),
+                      ),
+                    )
+                  else
+                    const SizedBox.shrink(),
                 ],
               ),
             ),
           ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Focus effects are local: dashboard, EPG requests and artwork stay stable.
+class _DashboardTitleCard extends StatefulWidget {
+  final ContentItem item;
+  final String metadata;
+  final double? progress;
+  final VoidCallback onTap;
+  const _DashboardTitleCard({
+    super.key,
+    required this.item,
+    required this.metadata,
+    this.progress,
+    required this.onTap,
+  });
+  @override
+  State<_DashboardTitleCard> createState() => _DashboardTitleCardState();
+}
+
+class _DashboardTitleCardState extends State<_DashboardTitleCard> {
+  bool focused = false;
+  String? prefetched;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final uri = widget.item.artwork?.toString();
+    if (uri == null || uri == prefetched) return;
+    prefetched = uri;
+    // Only lazily constructed, visible/adjacent cards warm the image cache.
+    unawaited(
+      precacheImage(
+        ResizeImage(CachedNetworkImageProvider(uri, maxWidth: 480), width: 480),
+        context,
+        onError: (_, _) {},
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 220,
+    child: AnimatedScale(
+      scale: focused && !MediaQuery.disableAnimationsOf(context) ? 1.04 : 1,
+      duration: const Duration(milliseconds: 170),
+      curve: Curves.easeOut,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 170),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: focused ? const Color(0xff293d54) : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: focused ? _accent : Colors.transparent),
         ),
-      ],
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: widget.onTap,
+            onFocusChange: (value) {
+              setState(() => focused = value);
+              if (value) {
+                final scrollable = Scrollable.maybeOf(
+                  context,
+                  axis: Axis.horizontal,
+                );
+                final renderObject = context.findRenderObject();
+                if (scrollable != null && renderObject != null) {
+                  scrollable.position.ensureVisible(
+                    renderObject,
+                    alignment: .35,
+                    duration: const Duration(milliseconds: 170),
+                    curve: Curves.easeOut,
+                  );
+                }
+              }
+            },
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 212,
+                    height: 86,
+                    child: ContinueWatchingArtwork(item: widget.item),
+                  ),
+                ),
+                if (widget.progress != null) ...[
+                  const SizedBox(height: 5),
+                  LinearProgressIndicator(
+                    value: widget.progress,
+                    minHeight: 3,
+                    color: _accent,
+                    backgroundColor: Colors.white12,
+                  ),
+                ],
+                const SizedBox(height: 7),
+                Text(
+                  widget.item.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  widget.metadata,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.white60),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     ),
   );
 }

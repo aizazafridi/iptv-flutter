@@ -27,3 +27,8 @@ abstract interface class SubtitleCustomizationEngine {
   void setSubtitleAppearance(SubtitleAppearance appearance);
   Future<void> addNamedSubtitle(Uri uri, String name);
 }
+
+/// A temporary UI inset; never changes saved subtitle appearance or track choice.
+abstract interface class SubtitleOverlayAvoidanceEngine {
+  void setSubtitleBottomInset(double inset);
+}

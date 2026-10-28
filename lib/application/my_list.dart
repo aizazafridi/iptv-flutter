@@ -1,3 +1,4 @@
+import 'live_favourite_groups.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -8,10 +9,18 @@ import 'watch_history.dart';
 class MyList extends ChangeNotifier {
   static final _instances = Expando<MyList>();
   static MyList forProvider(IptvProvider provider) =>
-      _instances[provider] ??= MyList(WatchHistory.forProvider(provider).scope);
+      _instances[provider] ??= MyList(
+        WatchHistory.forProvider(provider).scope,
+        groups: LiveFavouriteGroups.forProvider(provider),
+      );
+  final LiveFavouriteGroups groups;
   final String scope;
   final FlutterSecureStorage storage;
-  MyList(this.scope, {this.storage = const FlutterSecureStorage()});
+  MyList(
+    this.scope, {
+    this.storage = const FlutterSecureStorage(),
+    LiveFavouriteGroups? groups,
+  }) : groups = groups ?? LiveFavouriteGroups(scope, storage: storage);
   List<ContentItem> _items = [];
   Future<void>? _loading;
   Future<void> _writes = Future.value();
@@ -64,7 +73,19 @@ class MyList extends ChangeNotifier {
             )
             .toList(),
       );
-      await storage.write(key: 'my_list:$scope', value: payload);
+      final removing = item.type == ContentType.live && contains(item);
+      Set<String> previousGroups = {};
+      if (removing) {
+        await groups.load();
+        previousGroups = groups.memberships(item.id);
+        await groups.assign(item.id, {});
+      }
+      try {
+        await storage.write(key: 'my_list:$scope', value: payload);
+      } catch (_) {
+        if (removing) await groups.assign(item.id, previousGroups);
+        rethrow;
+      }
       _items = updated;
       notifyListeners();
     });

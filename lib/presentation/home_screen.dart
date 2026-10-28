@@ -1,3 +1,8 @@
+import 'dart:async';
+import '../application/category_locks.dart';
+import '../data/locked_provider.dart';
+import 'lock_password_dialog.dart';
+import 'profile_selection_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'smooth_page_route.dart';
@@ -5,7 +10,6 @@ import '../application/session.dart';
 import '../application/appearance.dart';
 import 'settings_screen.dart';
 import '../domain/models.dart';
-import 'widgets.dart';
 import 'profile_avatar.dart';
 import 'profile_loading.dart';
 import 'system_clock.dart';
@@ -33,8 +37,28 @@ class _HomeScreenState extends State<HomeScreen> {
   final loadingKey = GlobalKey<ProfileLoadingState>();
   AccountProfile? selectingProfile;
   Offset loadingOrigin = Offset.zero;
+  bool showDelayedLoading = false;
+  Timer? profileDelay;
+  Future<bool> verifyProfile(
+    AccountProfile profile, {
+    bool managing = false,
+  }) async {
+    final locks = CategoryLocks(profile.id);
+    await locks.load();
+    if (!mounted) return false;
+    if (!locks.profilePinRequired && !(managing && locks.hasPassword)) {
+      return true;
+    }
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (_) => LockPasswordDialog(locks: locks),
+    );
+    return mounted && pin != null && locks.check(pin);
+  }
+
   Future<void> selectProfile(AccountProfile profile) async {
     if (selectingProfile != null || widget.session.loading) return;
+    if (!await verifyProfile(profile) || !mounted) return;
     final profileBox =
         profileKeys[profile.id]?.currentContext?.findRenderObject()
             as RenderBox?;
@@ -43,17 +67,26 @@ class _HomeScreenState extends State<HomeScreen> {
         ? profileBox.localToGlobal(profileBox.size.center(Offset.zero)) -
               bodyBox.localToGlobal(bodyBox.size.center(Offset.zero))
         : Offset.zero;
-    setState(() => selectingProfile = profile);
+    setState(() {
+      selectingProfile = profile;
+      showDelayedLoading = false;
+    });
+    profileDelay = Timer(const Duration(milliseconds: 500), () {
+      if (mounted && selectingProfile != null) {
+        setState(() => showDelayedLoading = true);
+      }
+    });
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
     await widget.session.selectProfile(profile);
     if (!mounted) return;
     if (widget.session.error == null) await loadingKey.currentState?.finish();
+    profileDelay?.cancel();
     if (mounted) setState(() => selectingProfile = null);
   }
 
   late final List<FocusNode> accountFields = List.generate(
-    4,
+    5,
     (index) => FocusNode(
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -65,16 +98,18 @@ class _HomeScreenState extends State<HomeScreen> {
           return KeyEventResult.handled;
         }
         if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-          if (index < (isM3u ? 1 : 3)) {
-            accountFields[index + 1].requestFocus();
+          final position = visibleFields.indexOf(index);
+          if (position < visibleFields.length - 1) {
+            accountFields[visibleFields[position + 1]].requestFocus();
           } else {
             node.nextFocus();
           }
           return KeyEventResult.handled;
         }
         if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-          if (index > 0) {
-            accountFields[index - 1].requestFocus();
+          final position = visibleFields.indexOf(index);
+          if (position > 0) {
+            accountFields[visibleFields[position - 1]].requestFocus();
           } else {
             connectionTypeFocus.requestFocus();
           }
@@ -100,9 +135,37 @@ class _HomeScreenState extends State<HomeScreen> {
   // New accounts use the generic Xtream adapter; edits retain their adapter.
   String providerId = 'xtream';
   bool get isM3u => providerId == 'm3u';
-  List<int> get visibleFields => isM3u ? [0, 1] : [0, 1, 2, 3];
+  List<int> get visibleFields => [
+    0,
+    1,
+    if (!isM3u) ...[2, 3],
+    if (kidsProfile || requireProfilePin) 4,
+  ];
   final profileName = TextEditingController();
   int avatar = 0;
+  bool kidsProfile = false, requireProfilePin = false, existingPin = false;
+  Set<String> allowedKidsCategories = {};
+  final profilePin = TextEditingController();
+  Future<void> loadPolicy(String id) async {
+    final locks = CategoryLocks(id);
+    await locks.load();
+    if (mounted) {
+      setState(() {
+        kidsProfile = locks.kidsProfile;
+        requireProfilePin = locks.profilePinRequired;
+        existingPin = locks.hasPassword;
+        allowedKidsCategories = Set.of(locks.allowedKidsCategories);
+      });
+    }
+  }
+
+  Future<void> configurePolicy(CategoryLocks locks) => locks.setProfilePolicy(
+    kids: kidsProfile,
+    requirePin: requireProfilePin,
+    allowed: allowedKidsCategories,
+    pin: profilePin.text,
+  );
+
   @override
   void initState() {
     super.initState();
@@ -125,6 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (editing != null) {
       profileName.text = editing.name;
       avatar = editing.avatar;
+      unawaited(loadPolicy(editing.id));
     }
   }
 
@@ -136,6 +200,8 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final node in accountFields) {
       node.dispose();
     }
+    profileDelay?.cancel();
+    profilePin.dispose();
     connectionTypeFocus.dispose();
     profileName.dispose();
     server.dispose();
@@ -171,7 +237,12 @@ class _HomeScreenState extends State<HomeScreen> {
     await editSavedProfile(profile);
   }
 
-  Future<void> editSavedProfile(AccountProfile profile) async {
+  Future<void> editSavedProfile(
+    AccountProfile profile, {
+    bool verified = false,
+  }) async {
+    if (!verified && !await verifyProfile(profile, managing: true)) return;
+    if (!mounted) return;
     await Navigator.of(context).push<bool>(
       SmoothPageRoute<bool>(
         builder: (_) => HomeScreen(
@@ -197,6 +268,7 @@ class _HomeScreenState extends State<HomeScreen> {
         name: profileName.text,
         avatar: avatar,
         profileId: widget.editProfile!.id,
+        configureProfile: configurePolicy,
       );
       if (mounted && saved) Navigator.of(context).pop(true);
       return;
@@ -211,6 +283,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       name: profileName.text,
       avatar: avatar,
+      configureProfile: configurePolicy,
     );
     if (mounted &&
         widget.addAccountOnly &&
@@ -220,105 +293,126 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  List<Widget> accountActions() {
+    final session = widget.session;
+    return [
+      if (!widget.addAccountOnly) const SystemClock(),
+      if (!widget.addAccountOnly &&
+          session.account != null &&
+          selectingProfile == null)
+        IconButton(
+          tooltip: 'Switch account',
+          iconSize: 32,
+          constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
+          icon: const Icon(Icons.switch_account_outlined),
+          onPressed: session.loading ? null : switchUser,
+        ),
+      if (!widget.addAccountOnly)
+        IconButton(
+          tooltip: 'Settings',
+          iconSize: 32,
+          constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
+          icon: const Icon(Icons.settings_outlined),
+          onPressed: session.loading
+              ? null
+              : () => Navigator.of(context).push(
+                  SmoothPageRoute<void>(
+                    builder: (_) => SettingsScreen(
+                      session: session,
+                      appearance: widget.appearance,
+                      switchUser: switchUser,
+                      addAccount: addAccount,
+                      editAccount: editAccount,
+                    ),
+                  ),
+                ),
+        ),
+      if (!widget.addAccountOnly &&
+          session.activeProfile != null &&
+          selectingProfile == null)
+        PopupMenuButton<String>(
+          tooltip: 'Current account',
+          iconSize: 44,
+          enabled: !session.loading,
+          icon: ProfileAvatar(session.activeProfile!.avatar, size: 44),
+          onSelected: (value) {
+            if (value == 'edit') editAccount();
+            if (value == 'switch') switchUser();
+          },
+          itemBuilder: (context) => [
+            PopupMenuItem<String>(
+              enabled: false,
+              child: Text(
+                session.activeProfile!.name,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            PopupMenuItem<String>(
+              enabled: false,
+              child: Text(
+                session.account?.expiresAt == null
+                    ? 'Expiry date unavailable'
+                    : 'Expires ${MaterialLocalizations.of(context).formatFullDate(session.account!.expiresAt!.toLocal())}',
+              ),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem<String>(
+              value: 'edit',
+              child: ListTile(
+                leading: Icon(Icons.edit_outlined),
+                title: Text('Edit'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const PopupMenuItem<String>(
+              value: 'switch',
+              child: ListTile(
+                leading: Icon(Icons.switch_account_outlined),
+                title: Text('Switch account'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.session,
     builder: (context, _) {
       final session = widget.session;
       return Scaffold(
-        appBar: AppBar(
-          toolbarHeight: widget.addAccountOnly ? null : 68,
-          title: Text(
-            widget.editProfile != null
-                ? 'Edit account'
-                : widget.addAccountOnly
-                ? 'Add account'
-                : 'STREAMORA',
-          ),
-          actions: [
-            if (!widget.addAccountOnly) const SystemClock(),
-            if (!widget.addAccountOnly &&
-                session.account != null &&
-                selectingProfile == null)
-              IconButton(
-                tooltip: 'Switch account',
-                iconSize: 32,
-                constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
-                icon: const Icon(Icons.switch_account_outlined),
-                onPressed: session.loading ? null : switchUser,
-              ),
-            if (!widget.addAccountOnly)
-              IconButton(
-                tooltip: 'Settings',
-                iconSize: 32,
-                constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
-                icon: const Icon(Icons.settings_outlined),
-                onPressed: session.loading
+        appBar: !widget.addAccountOnly
+            ? null
+            : AppBar(
+                toolbarHeight: widget.addAccountOnly
                     ? null
-                    : () => Navigator.of(context).push(
-                        SmoothPageRoute<void>(
-                          builder: (_) => SettingsScreen(
-                            session: session,
-                            appearance: widget.appearance,
-                            switchUser: switchUser,
-                            addAccount: addAccount,
-                            editAccount: editAccount,
-                          ),
-                        ),
-                      ),
+                    : session.account != null
+                    ? 48
+                    : 60,
+                title: Text(
+                  widget.editProfile != null
+                      ? 'Edit account'
+                      : widget.addAccountOnly
+                      ? 'Add account'
+                      : session.account != null
+                      ? ''
+                      : 'STREAMORA',
+                ),
+                actions: accountActions(),
               ),
-            if (!widget.addAccountOnly &&
-                session.activeProfile != null &&
-                selectingProfile == null)
-              PopupMenuButton<String>(
-                tooltip: 'Current account',
-                iconSize: 44,
-                enabled: !session.loading,
-                icon: ProfileAvatar(session.activeProfile!.avatar, size: 44),
-                onSelected: (value) {
-                  if (value == 'edit') editAccount();
-                  if (value == 'switch') switchUser();
-                },
-                itemBuilder: (context) => [
-                  PopupMenuItem<String>(
-                    enabled: false,
-                    child: Text(
-                      session.activeProfile!.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                  PopupMenuItem<String>(
-                    enabled: false,
-                    child: Text(
-                      session.account?.expiresAt == null
-                          ? 'Expiry date unavailable'
-                          : 'Expires ${MaterialLocalizations.of(context).formatFullDate(session.account!.expiresAt!.toLocal())}',
-                    ),
-                  ),
-                  const PopupMenuDivider(),
-                  const PopupMenuItem<String>(
-                    value: 'edit',
-                    child: ListTile(
-                      leading: Icon(Icons.edit_outlined),
-                      title: Text('Edit'),
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'switch',
-                    child: ListTile(
-                      leading: Icon(Icons.switch_account_outlined),
-                      title: Text('Switch account'),
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
-                ],
-              ),
-          ],
-        ),
         body: SizedBox.expand(
           key: bodyKey,
-          child: selectingProfile != null
+          child: selectingProfile != null && !showDelayedLoading
+              ? Center(
+                  child: ProfileAvatar(
+                    selectingProfile!.avatar,
+                    size: 150,
+                    roundedSquare: true,
+                  ),
+                )
+              : selectingProfile != null
               ? ProfileLoading(
                   key: loadingKey,
                   profile: selectingProfile!,
@@ -339,89 +433,63 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     },
   );
-  Widget profilePicker() => Center(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+  Future<void> manageProfile(AccountProfile profile) async {
+    if (!await verifyProfile(profile, managing: true) || !mounted) return;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text(profile.name),
         children: [
-          const Text(
-            "Who's watching?",
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'edit'),
+            child: const Text('Edit profile'),
           ),
-          const SizedBox(height: 24),
-          if (widget.session.error != null) Text(widget.session.error!),
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 16,
-            runSpacing: 16,
-            children: [
-              for (final profile in widget.session.profiles)
-                SizedBox(
-                  key: profileKeys.putIfAbsent(profile.id, () => GlobalKey()),
-                  width: 220,
-                  child: Column(
-                    children: [
-                      FocusCard(
-                        autofocus:
-                            widget.session.profiles.first.id == profile.id,
-                        onTap: () => selectProfile(profile),
-                        child: Column(
-                          children: [
-                            ProfileAvatar(profile.avatar, size: 160),
-                            const SizedBox(height: 12),
-                            Text(
-                              profile.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Tooltip(
-                        message: 'Edit ${profile.name}',
-                        child: TextButton.icon(
-                          onPressed: () => editSavedProfile(profile),
-                          icon: const Icon(Icons.edit_outlined, size: 16),
-                          label: const Text('Edit'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              if (widget.session.profiles.length < 5)
-                SizedBox(
-                  width: 220,
-                  child: FocusCard(
-                    autofocus: widget.session.profiles.isEmpty,
-                    onTap: () => addAccount(fromStartup: true),
-                    child: const Column(
-                      children: [
-                        SizedBox.square(
-                          dimension: 160,
-                          child: Icon(
-                            Icons.person_add_alt_1_outlined,
-                            size: 64,
-                          ),
-                        ),
-                        SizedBox(height: 12),
-                        Text('Add profile', textAlign: TextAlign.center),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'delete'),
+            child: const Text('Delete profile'),
           ),
-          if (widget.session.profiles.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: Text('Add a profile to get started.'),
-            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
         ],
       ),
-    ),
+    );
+    if (!mounted) return;
+    if (action == 'edit') {
+      await editSavedProfile(profile, verified: true);
+      return;
+    }
+    if (!mounted) return;
+    if (action == 'delete') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Delete profile?'),
+          content: Text('Remove ${profile.name} from this device?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) await widget.session.removeProfile(profile);
+    }
+  }
+
+  Widget profilePicker() => ProfileSelectionScreen(
+    profiles: widget.session.profiles,
+    lastProfileId: widget.session.lastProfileId,
+    error: widget.session.error,
+    onSelect: selectProfile,
+    onManage: manageProfile,
+    onAdd: () => addAccount(fromStartup: true),
   );
 
   List<TextEditingController> get fieldControllers => [
@@ -429,12 +497,14 @@ class _HomeScreenState extends State<HomeScreen> {
     server,
     username,
     password,
+    profilePin,
   ];
   List<String> get fieldLabels => [
     'Account name',
     isM3u ? 'M3U playlist URL' : 'Server URL',
     'Username',
     'Password',
+    'Six-digit PIN',
   ];
   bool editingField = false;
   Future<void> editField(int index) async {
@@ -450,11 +520,22 @@ class _HomeScreenState extends State<HomeScreen> {
           child: TextField(
             controller: draft,
             autofocus: true,
-            obscureText: index == 3,
+            obscureText: index >= 3,
             autocorrect: false,
             enableSuggestions: index != 3,
-            maxLength: index == 0 ? 30 : null,
-            keyboardType: index == 1 ? TextInputType.url : TextInputType.text,
+            maxLength: index == 0
+                ? 30
+                : index == 4
+                ? 6
+                : null,
+            inputFormatters: index == 4
+                ? [FilteringTextInputFormatter.digitsOnly]
+                : null,
+            keyboardType: index == 1
+                ? TextInputType.url
+                : index == 4
+                ? TextInputType.number
+                : TextInputType.text,
             textInputAction: TextInputAction.done,
             onSubmitted: (value) => Navigator.pop(dialogContext, value),
           ),
@@ -489,7 +570,7 @@ class _HomeScreenState extends State<HomeScreen> {
       readOnly: true,
       showCursor: false,
       enableInteractiveSelection: false,
-      obscureText: index == 3,
+      obscureText: index >= 3,
       onTap: () => editField(index),
       decoration: InputDecoration(
         labelText: fieldLabels[index],
@@ -501,6 +582,14 @@ class _HomeScreenState extends State<HomeScreen> {
         suffixIcon: const Icon(Icons.edit_outlined, size: 18),
       ),
       validator: (value) {
+        if (index == 4) {
+          if (value == null || value.isEmpty) {
+            return existingPin ? null : 'Enter a six-digit PIN';
+          }
+          return RegExp(r'^[0-9]{6}$').hasMatch(value)
+              ? null
+              : 'Use exactly six digits';
+        }
         if (value == null || value.trim().isEmpty) {
           return 'Enter ${fieldLabels[index].toLowerCase()}';
         }
@@ -554,6 +643,85 @@ class _HomeScreenState extends State<HomeScreen> {
     ],
   );
 
+  Future<void> chooseKidsCategories() async {
+    final draft = ProviderConfig(
+      providerId: providerId,
+      server: server.text.trim(),
+      username: username.text.trim(),
+      password: password.text,
+    );
+    dynamic candidate;
+    try {
+      candidate = widget.session.registry.create(draft);
+      final raw = candidate is LockedProvider ? candidate.delegate : candidate;
+      await raw.connect();
+      final categories = <Category>[];
+      for (final type in ContentType.values) {
+        if (raw.supportedTypes.contains(type)) {
+          categories.addAll(await raw.getCategories(type) as List<Category>);
+        }
+      }
+      if (!mounted) return;
+      final selected = Set<String>.of(allowedKidsCategories);
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, update) => AlertDialog(
+            title: const Text('Allowed Kids categories'),
+            content: SizedBox(
+              width: 480,
+              height: 340,
+              child: ListView.builder(
+                itemCount: categories.length,
+                itemBuilder: (context, index) {
+                  final category = categories[index];
+                  final key = '${category.type.name}:${category.id}';
+                  return CheckboxListTile(
+                    title: Text(category.name),
+                    subtitle: Text(category.type.label),
+                    value: selected.contains(key),
+                    onChanged: (value) => update(() {
+                      if (value == true) {
+                        selected.add(key);
+                      } else {
+                        selected.remove(key);
+                      }
+                    }),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (mounted && saved == true) {
+        setState(() => allowedKidsCategories = selected);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enter working connection details before choosing categories.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      candidate?.dispose();
+    }
+  }
+
   Widget login() => LayoutBuilder(
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 700;
@@ -577,6 +745,29 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           for (final index in visibleFields) accountField(index),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Kids profile'),
+            subtitle: const Text(
+              'Only categories selected by a parent are allowed',
+            ),
+            value: kidsProfile,
+            onChanged: (value) => setState(() => kidsProfile = value),
+          ),
+          if (kidsProfile)
+            TextButton.icon(
+              onPressed: chooseKidsCategories,
+              icon: const Icon(Icons.child_care),
+              label: Text(
+                'Allowed categories (${allowedKidsCategories.length})',
+              ),
+            ),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Require PIN to open profile'),
+            value: requireProfilePin,
+            onChanged: (value) => setState(() => requireProfilePin = value),
+          ),
         ],
       );
       return Center(
@@ -641,6 +832,7 @@ class _HomeScreenState extends State<HomeScreen> {
     key: ValueKey(widget.session.activeProfile?.id ?? widget.session.provider),
     session: widget.session,
     appearance: widget.appearance,
+    headerActions: accountActions(),
     onSettings: () => Navigator.of(context).push(
       SmoothPageRoute<void>(
         builder: (_) => SettingsScreen(

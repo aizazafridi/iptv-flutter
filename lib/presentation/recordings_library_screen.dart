@@ -91,6 +91,7 @@ class _RecordingsLibraryScreenState extends State<RecordingsLibraryScreen> {
               .where(
                 (entry) =>
                     entry.item.type == widget.type &&
+                    locks.allowsItem(entry.item) &&
                     !locks.titleHidden(entry.item) &&
                     (entry.item.categoryId == null ||
                         !locks.hidden(

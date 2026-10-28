@@ -1,3 +1,4 @@
+import 'live_favourite_dialogs.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../application/live_favourite_groups.dart';
@@ -69,72 +70,13 @@ class _LiveMyListPanelState extends State<LiveMyListPanel> {
     }
   }
 
-  Future<String?> groupName({String? current}) => showDialog<String>(
-    context: context,
-    builder: (_) => _GroupNameDialog(current: current),
-  );
-
   Future<void> create() async {
-    final name = await groupName();
-    if (!mounted || name == null) return;
-    await action(() async {
-      final id = await groups.create(name);
-      if (mounted) widget.onGroupChanged(id);
-    });
+    final id = await showLiveGroupName(context, groups);
+    if (mounted && id != null) widget.onGroupChanged(id);
   }
 
-  Future<void> assign(ContentItem channel) async {
-    final selected = groups.memberships(channel.id);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: Text(
-            'Groups: ${channel.name}',
-            style: const TextStyle(fontSize: 16),
-          ),
-          content: SizedBox(
-            width: 340,
-            child: groups.groups.isEmpty
-                ? const Text('Create a group using New group first.')
-                : SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (final group in groups.groups)
-                          CheckboxListTile(
-                            dense: true,
-                            title: Text(group.name),
-                            value: selected.contains(group.id),
-                            onChanged: (value) => update(() {
-                              if (value == true) {
-                                selected.add(group.id);
-                              } else {
-                                selected.remove(group.id);
-                              }
-                            }),
-                          ),
-                      ],
-                    ),
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (saved == true && mounted) {
-      await action(() => groups.assign(channel.id, selected));
-    }
-  }
+  Future<void> assign(ContentItem channel) =>
+      showLiveFavouriteDialog(context, widget.provider, channel);
 
   Future<void> channelMenu(
     ContentItem channel,
@@ -167,7 +109,7 @@ class _LiveMyListPanelState extends State<LiveMyListPanel> {
     if (option == 'groups') {
       await assign(channel);
     } else if (option == 'remove') {
-      await action(() => list.toggle(channel));
+      await assign(channel);
     } else {
       await action(
         () => groups.moveChannel(
@@ -180,89 +122,7 @@ class _LiveMyListPanelState extends State<LiveMyListPanel> {
     }
   }
 
-  Future<void> manage() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Manage groups', style: TextStyle(fontSize: 18)),
-        content: SizedBox(
-          width: 460,
-          height: 330,
-          child: ListenableBuilder(
-            listenable: groups,
-            builder: (_, _) => groups.groups.isEmpty
-                ? const Center(child: Text('No custom groups yet.'))
-                : ListView(
-                    children: [
-                      for (final group in groups.groups)
-                        ListTile(
-                          key: ValueKey(group.id),
-                          dense: true,
-                          title: Text(
-                            group.name,
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'Rename ${group.name}',
-                                icon: const Icon(Icons.edit_outlined, size: 18),
-                                onPressed: () async {
-                                  final name = await groupName(
-                                    current: group.name,
-                                  );
-                                  if (mounted && name != null) {
-                                    await action(
-                                      () => groups.rename(group.id, name),
-                                    );
-                                  }
-                                },
-                              ),
-                              IconButton(
-                                tooltip: 'Move ${group.name} up',
-                                icon: const Icon(Icons.arrow_upward, size: 18),
-                                onPressed: () => action(
-                                  () => groups.moveGroup(group.id, -1),
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: 'Move ${group.name} down',
-                                icon: const Icon(
-                                  Icons.arrow_downward,
-                                  size: 18,
-                                ),
-                                onPressed: () =>
-                                    action(() => groups.moveGroup(group.id, 1)),
-                              ),
-                              IconButton(
-                                tooltip: 'Delete ${group.name}',
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  size: 18,
-                                ),
-                                onPressed: () =>
-                                    action(() => groups.delete(group.id)),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-    if (mounted && !groups.exists(widget.selectedGroup)) {
-      widget.onGroupChanged(LiveFavouriteGroups.all);
-    }
-  }
+  Future<void> manage() => showLiveGroupManager(context, widget.provider);
 
   @override
   Widget build(BuildContext context) => AsyncView(
@@ -457,46 +317,5 @@ class _ChannelRowState extends State<_ChannelRow> {
         ),
       ],
     ),
-  );
-}
-
-class _GroupNameDialog extends StatefulWidget {
-  final String? current;
-  const _GroupNameDialog({this.current});
-  @override
-  State<_GroupNameDialog> createState() => _GroupNameDialogState();
-}
-
-class _GroupNameDialogState extends State<_GroupNameDialog> {
-  late final controller = TextEditingController(text: widget.current ?? '');
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.current == null ? 'New group' : 'Rename group'),
-    content: SizedBox(
-      width: 300,
-      child: TextField(
-        controller: controller,
-        autofocus: true,
-        maxLength: 40,
-        decoration: const InputDecoration(labelText: 'Group name'),
-        onSubmitted: (value) => Navigator.pop(context, value),
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () => Navigator.pop(context, controller.text),
-        child: const Text('Save'),
-      ),
-    ],
   );
 }

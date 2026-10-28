@@ -31,6 +31,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Profile settings'), findsOneWidget);
     expect(find.text('Playback defaults'), findsNothing);
+    await tester.ensureVisible(find.text('About and credits'));
+    await tester.tap(find.text('About and credits'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'This product uses the TMDB API but is not endorsed or certified by TMDB.',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Player settings'));
     await tester.pumpAndSettle();
     expect(find.text('Playback defaults'), findsOneWidget);

@@ -32,6 +32,7 @@ void main() {
         MaterialApp(
           theme: ThemeData.dark(),
           home: PlayerScreen(
+            liveTvMode: true,
             source: PlaybackSource(
               uri: Uri.parse('https://example.com/live'),
               title: 'Channel',
@@ -49,7 +50,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       final before = engine.builds;
-      await tester.tap(find.byTooltip('Programme guide'));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('TV Guide'));
       await tester.pumpAndSettle();
       expect(find.byType(TvGuideScreen), findsOneWidget);
       expect(engine.surfaces, 1);

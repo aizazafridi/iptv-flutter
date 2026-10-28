@@ -31,6 +31,38 @@ class FixtureClient extends XtreamClient {
 }
 
 void main() {
+  test(
+    'series catalog retains valid provider ratings and release years',
+    () async {
+      final client = FixtureClient()
+        ..fixture = [
+          {
+            'series_id': 1,
+            'name': 'Rated series',
+            'rating': '8.7',
+            'releaseDate': '2023-01-15',
+          },
+          {
+            'series_id': 2,
+            'name': 'Unknown rating',
+            'rating': 'NaN',
+            'releaseDate': '',
+          },
+          {'series_id': 3, 'name': 'Invalid scale', 'rating': '87'},
+        ];
+      final provider = XtreamProvider(client);
+      final rows = await provider.getItems(
+        const Category('7', 'Drama', ContentType.series),
+      );
+      expect(rows.first.rating, 8.7);
+      expect(rows.first.releaseYear, 2023);
+      expect(rows[1].rating, isNull);
+      expect(rows[1].releaseYear, isNull);
+      expect(rows[2].rating, isNull);
+      provider.dispose();
+    },
+  );
+
   late FixtureClient client;
   late XtreamProvider provider;
   setUp(() {
@@ -197,6 +229,62 @@ void main() {
         provider.resolvePlayback(item),
         throwsA(isA<ProviderException>()),
       );
+    },
+  );
+  test(
+    'episode metadata and incomplete provider records are parsed defensively',
+    () async {
+      const series = ContentItem(
+        id: '9',
+        name: 'Series',
+        type: ContentType.series,
+      );
+      client.fixture = {
+        'info': {},
+        'episodes': {
+          '0': [
+            {
+              'id': 'special',
+              'episode_num': 1,
+              'info': {
+                'plot': 'Special synopsis',
+                'duration_secs': 2490,
+                'air_date': '2024-01-01',
+                'movie_image': 'https://example.com/still.jpg',
+              },
+            },
+            {'title': 'Unplayable missing ID'},
+            null,
+          ],
+          '2': null,
+        },
+      };
+      final result = await provider.getSeriesDetails(series);
+      expect(result.episodes.length, 1);
+      final episode = result.episodes.single;
+      expect(episode.id, 'special');
+      expect(episode.season, 0);
+      expect(episode.synopsis, 'Special synopsis');
+      expect(episode.duration, '0:41:30');
+      expect(episode.airDate, '2024-01-01');
+      expect(episode.artwork!.path, '/still.jpg');
+      expect(episode.extension, 'mp4');
+      client.fixture = {
+        'episodes': [
+          {
+            'id': 'flat',
+            'season': 3,
+            'episode_num': 2,
+            'title': 'Flat episode',
+          },
+        ],
+      };
+      expect(
+        (await provider.getSeriesDetails(series)).episodes.single.season,
+        3,
+      );
+      client.fixture = <String, dynamic>{};
+      expect((await provider.getSeriesDetails(series)).episodes, isEmpty);
     },
   );
   test('movie details retain the provider container extension', () async {
