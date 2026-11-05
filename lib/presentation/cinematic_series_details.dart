@@ -1,6 +1,8 @@
-import 'artwork_prefetch.dart';
+import 'artwork_retry.dart';
+import 'details_title.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import 'dart:async';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'media_horizontal_rail.dart';
 import 'package:flutter/services.dart';
@@ -64,10 +66,13 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
   List<ContentItem> related = [];
   Uri? logo, backdrop;
   Future<Uri?>? backdropLookup;
-  Future<Uri?> fallbackBackdrop() => backdropLookup ??=
-      (widget.artworkService ?? TmdbArtworkService.configured).detailsBackdrop(
-        info,
-      );
+  Future<Uri?> fallbackBackdrop() => backdropLookup ??= retryArtwork<Uri?>(
+    scope: artworkRetries,
+    load: () => (widget.artworkService ?? TmdbArtworkService.configured)
+        .detailsBackdrop(info),
+    usable: (value) => value != null,
+    active: () => mounted,
+  );
   int? season;
   bool initialized = false;
   int revision = 0;
@@ -99,6 +104,7 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
   bool resumable(WatchEntry? entry) =>
       entry != null && !completed(entry) && entry.position > Duration.zero;
 
+  final artworkRetries = ArtworkRetryScope();
   @override
   void initState() {
     super.initState();
@@ -141,19 +147,23 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
     // Independent enrichment never blocks the episode browser.
     await Future.wait([
       () async {
-        final value = await artwork.titleLogo(info);
+        final value = await retryArtwork<Uri?>(
+          scope: artworkRetries,
+          load: () => artwork.titleLogo(info),
+          usable: (v) => v != null,
+          active: () => mounted,
+        );
         if (mounted) setState(() => logo = value);
       }(),
       () async {
-        final value = await client.credits(info);
+        final value = await retryArtwork<List<MovieCredit>>(
+          scope: artworkRetries,
+          load: () => client.credits(info),
+          usable: (v) => v.isNotEmpty,
+          active: () => mounted,
+        );
         if (mounted) {
-          ArtworkPrefetch.images(
-            context,
-            value.map((person) => person.photo),
-            width: 252,
-            limit: 6,
-          );
-          setState(() => credits = value);
+          if (value != null) setState(() => credits = value);
         }
       }(),
       if (info.backdrop == null)
@@ -199,6 +209,7 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
 
   @override
   void dispose() {
+    artworkRetries.dispose();
     history.removeListener(refreshProgress);
     playFocus.dispose();
     pageScroll.dispose();
@@ -207,14 +218,12 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
 
   void focusPlay() {
     playFocus.requestFocus();
-    final ctx = playFocus.context;
-    if (ctx != null) {
+    if (pageScroll.hasClients) {
       unawaited(
-        Scrollable.ensureVisible(
-          ctx,
-          alignment: .35,
-          duration: const Duration(milliseconds: 170),
-          curve: Curves.easeOut,
+        pageScroll.animateTo(
+          0,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
         ),
       );
     }
@@ -375,7 +384,7 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         side: const BorderSide(color: Colors.white24),
       ).copyWith(
-        animationDuration: const Duration(milliseconds: 170),
+        animationDuration: const Duration(milliseconds: 240),
         side: WidgetStateProperty.resolveWith(
           (states) => BorderSide(
             color: states.contains(WidgetState.focused)
@@ -406,15 +415,10 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
     final saved = target == null ? null : progress[target.id];
     final resume = resumable(saved);
     final image = info.backdrop ?? backdrop;
-    final title = Text(
+    final title = DetailsTitle(
       movieDisplayTitle(info.item.name),
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        fontSize: 46 * scale,
-        height: 1.1,
-        fontWeight: FontWeight.w600,
-      ),
+      fontSize: 46 * scale,
+      weight: FontWeight.w600,
     );
     final activeEpisodes = visible;
     final cardWidth = (290 * scale).clamp(220.0, 334.0);
@@ -430,22 +434,21 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
                 left: 0,
                 right: 0,
                 height: size.height * .88,
-                child: CachedNetworkImage(
+                child: SharedArtworkImage(
                   imageUrl: image.toString(),
                   fit: BoxFit.cover,
                   alignment: Alignment.topRight,
-                  memCacheWidth: 1920,
                   placeholder: (_, _) => const SizedBox(),
                   errorWidget: (_, _, _) => FutureBuilder<Uri?>(
                     future: fallbackBackdrop(),
                     builder: (context, snapshot) =>
                         snapshot.data == null || snapshot.data == image
                         ? const SizedBox()
-                        : CachedNetworkImage(
+                        : SharedArtworkImage(
+                            kind: ArtworkKind.backdrop,
                             imageUrl: snapshot.data.toString(),
                             fit: BoxFit.cover,
                             alignment: Alignment.topRight,
-                            memCacheWidth: 1920,
                             errorWidget: (_, _, _) => const SizedBox(),
                           ),
                   ),
@@ -506,13 +509,13 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
                           Semantics(
                             label: movieDisplayTitle(info.item.name),
                             image: true,
-                            child: CachedNetworkImage(
+                            child: SharedArtworkImage(
                               imageUrl: logo.toString(),
+                              kind: ArtworkKind.logo,
                               width: 500 * scale,
                               height: 120 * scale,
                               fit: BoxFit.contain,
                               alignment: Alignment.centerLeft,
-                              memCacheWidth: 1000,
                               placeholder: (_, _) => title,
                               errorWidget: (_, _, _) => title,
                             ),
@@ -595,6 +598,7 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
                           return KeyEventResult.handled;
                         }
                         if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                          focusPlay();
                           return KeyEventResult.handled;
                         }
                       }
@@ -614,9 +618,16 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
                                 FilledButton.styleFrom(
                                   backgroundColor: const Color(0xfff2f4f7),
                                   foregroundColor: const Color(0xff10151c),
-                                  minimumSize: const Size(0, 44),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
+                                  ),
+                                  fixedSize: Size(
+                                    (220 * scale).clamp(180, 220),
+                                    42,
+                                  ),
                                   textStyle: TextStyle(
-                                    fontSize: 20 * scale,
+                                    fontSize: 19 * scale,
                                     fontWeight: FontWeight.w500,
                                   ),
                                   shape: RoundedRectangleBorder(
@@ -908,11 +919,11 @@ class _EpisodeCard extends StatelessWidget {
                     .clamp(0.0, 1.0);
           return AnimatedScale(
             scale: focused ? 1.04 : 1,
-            duration: const Duration(milliseconds: 170),
-            curve: Curves.easeOut,
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeOutCubic,
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 170),
-              curve: Curves.easeOut,
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
                 color: focused
                     ? const Color(0xff29394b)
@@ -1068,7 +1079,7 @@ class _RelatedSeries extends StatelessWidget {
     ),
     child: Builder(
       builder: (context) => AnimatedContainer(
-        duration: const Duration(milliseconds: 170),
+        duration: const Duration(milliseconds: 240),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
           border: Border.all(

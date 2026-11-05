@@ -29,11 +29,31 @@ class LiveFavouriteGroups extends ChangeNotifier {
   });
   List<LiveFavouriteGroup> _groups = [];
   Map<String, List<String>> _orders = {};
+  Map<String, bool> _general = {};
+  Future<void>? _recovery;
+  String get transactionKey => 'live_membership_transaction:$scope';
+  Future<void> recoverPending() => _recovery ??= () async {
+    final saved = await storage.read(key: transactionKey);
+    if (saved == null) return;
+    final previous = jsonDecode(saved) as Map<String, dynamic>;
+    for (final entry in {
+      key: previous['groups'],
+      'my_list:$scope': previous['list'],
+    }.entries) {
+      if (entry.value == null) {
+        await storage.delete(key: entry.key);
+      } else {
+        await storage.write(key: entry.key, value: entry.value as String);
+      }
+    }
+    await storage.delete(key: transactionKey);
+  }();
   List<LiveFavouriteGroup> get groups => List.unmodifiable(_groups);
   Future<void>? _loading;
   Future<void> _writes = Future.value();
   String get key => 'live_favourite_groups:$scope';
   Future<void> load() => _loading ??= () async {
+    await recoverPending();
     final saved = await storage.read(key: key);
     if (saved != null) _restore(jsonDecode(saved) as Map<String, dynamic>);
   }();
@@ -47,6 +67,9 @@ class LiveFavouriteGroups extends ChangeNotifier {
           ),
         )
         .toList();
+    _general = (data['general'] as Map? ?? {}).map(
+      (key, value) => MapEntry(key as String, value == true),
+    );
     _orders = (data['orders'] as Map? ?? {}).map(
       (key, value) => MapEntry(key as String, (value as List).cast<String>()),
     );
@@ -63,14 +86,22 @@ class LiveFavouriteGroups extends ChangeNotifier {
         )
         .toList(),
     'orders': _orders,
+    'general': _general,
   };
-  Future<T> _change<T>(T Function() mutate) async {
+  Future<T> _change<T>(
+    T Function() mutate, {
+    Future<void> Function(String)? persist,
+  }) async {
     await load();
     final next = _writes.then((_) async {
       final previous = jsonDecode(jsonEncode(_json())) as Map<String, dynamic>;
       try {
         final result = mutate();
-        await storage.write(key: key, value: jsonEncode(_json()));
+        if (persist != null) {
+          await persist(jsonEncode(_json()));
+        } else {
+          await storage.write(key: key, value: jsonEncode(_json()));
+        }
         notifyListeners();
         return result;
       } catch (_) {
@@ -90,6 +121,8 @@ class LiveFavouriteGroups extends ChangeNotifier {
       );
     }
     if ([
+          'general favorites',
+          'general favourites',
           'all channels',
           'all favorites',
           'all favourites',
@@ -100,7 +133,9 @@ class LiveFavouriteGroups extends ChangeNotifier {
               group.id != except &&
               group.name.toLowerCase() == name.toLowerCase(),
         )) {
-      throw const ProviderException('Choose a different group name.');
+      throw ProviderException(
+        'A group named $name already exists or is reserved.',
+      );
     }
     return name;
   }
@@ -121,6 +156,9 @@ class LiveFavouriteGroups extends ChangeNotifier {
     return id;
   });
   Future<void> rename(String id, String input) => _change(() {
+    if (!_groups.any((group) => group.id == id)) {
+      throw const ProviderException('This group is no longer available.');
+    }
     final name = _name(input, except: id);
     _groups = _groups
         .map(
@@ -138,19 +176,91 @@ class LiveFavouriteGroups extends ChangeNotifier {
       .where((group) => group.channels.contains(channel))
       .map((group) => group.id)
       .toSet();
-  Future<void> assign(String channel, Set<String> selected) => _change(() {
+  bool generalContains(String channel, {required bool saved}) =>
+      _general[channel] ?? saved;
+  bool hasMembership(String channel, {required bool saved}) =>
+      generalContains(channel, saved: saved) || memberships(channel).isNotEmpty;
+  void _assign(String channel, Set<String> selected) {
+    if (selected.any((id) => !_groups.any((g) => g.id == id))) {
+      throw const ProviderException(
+        'A selected group is no longer available. Review your selections.',
+      );
+    }
     _groups = _groups.map((group) {
-      if (selected.contains(group.id) == group.channels.contains(channel)) {
-        return group;
-      }
+      final had = group.channels.contains(channel),
+          add = selected.contains(group.id);
+      if (had == add) return group;
       final channels = group.channels.where((id) => id != channel).toList();
-      if (selected.contains(group.id)) channels.add(channel);
+      if (add) channels.add(channel);
+      final ordered = _orders[group.id];
+      if (ordered != null) {
+        _orders[group.id] = ordered.where((id) => id != channel).toList();
+        if (add) _orders[group.id]!.add(channel);
+      }
       return LiveFavouriteGroup(
         group.id,
         group.name,
         List.unmodifiable(channels),
       );
     }).toList();
+  }
+
+  Future<void> assign(String channel, Set<String> selected) =>
+      _change(() => _assign(channel, selected));
+  Future<void> commitMembership(
+    String channel,
+    Set<String> selected,
+    bool general,
+    Future<void> Function(String) persist,
+  ) => _change(() {
+    _assign(channel, selected);
+    _general[channel] = general;
+  }, persist: persist);
+  Future<void> reorderGroups(List<String> ids) => _change(() {
+    if (ids.toSet().length != ids.length ||
+        ids.length != _groups.length ||
+        !_groups.every((group) => ids.contains(group.id))) {
+      throw const ProviderException(
+        'Groups changed. Reopen Move to try again.',
+      );
+    }
+    final byId = {for (final group in _groups) group.id: group};
+    _groups = ids.map((id) => byId[id]!).toList();
+  });
+  Future<void> reorderChannels(
+    String id,
+    List<String> ids,
+    List<ContentItem> favourites,
+  ) => _change(() {
+    if (!exists(id)) {
+      throw const ProviderException('This group is no longer available.');
+    }
+    final current = channels(id, favourites).map((item) => item.id).toSet();
+    if (ids.length != ids.toSet().length ||
+        ids.toSet().difference(current).isNotEmpty ||
+        current.difference(ids.toSet()).isNotEmpty) {
+      throw const ProviderException(
+        'Channels changed. Reopen Move to try again.',
+      );
+    }
+    final previous =
+        _orders[id] ??
+        _groups.where((g) => g.id == id).firstOrNull?.channels ??
+        <String>[];
+    // Preserve missing/hidden references; only the displayed IDs change position.
+    final ordered = ids.iterator;
+    final merged = <String>[];
+    for (final channel in previous) {
+      if (current.contains(channel)) {
+        if (ordered.moveNext()) merged.add(ordered.current);
+      } else {
+        merged.add(channel);
+      }
+    }
+    while (ordered.moveNext()) {
+      merged.add(ordered.current);
+    }
+    _orders[id] = merged;
   });
   Future<void> moveGroup(String id, int delta) => _change(() {
     final index = _groups.indexWhere((group) => group.id == id),

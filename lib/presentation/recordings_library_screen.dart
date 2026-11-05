@@ -17,7 +17,7 @@ class RecordingsLibraryScreen extends StatefulWidget {
   const RecordingsLibraryScreen({
     super.key,
     required this.provider,
-    required this.type,
+    this.type = ContentType.live,
   });
   @override
   State<RecordingsLibraryScreen> createState() =>
@@ -79,7 +79,7 @@ class _RecordingsLibraryScreenState extends State<RecordingsLibraryScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('${widget.type.label} recordings')),
+    appBar: AppBar(title: const Text('Recordings')),
     body: AsyncView(
       future: loading,
       retry: () =>
@@ -87,10 +87,13 @@ class _RecordingsLibraryScreenState extends State<RecordingsLibraryScreen> {
       builder: (_) => ListenableBuilder(
         listenable: Listenable.merge([store, locks]),
         builder: (_, _) {
+          final category = CategoryLocks.recordingsCategory(ContentType.live);
+          if (locks.hidden(category) || locks.isLocked(category)) {
+            return const EmptyState('Recordings are hidden or PIN protected.');
+          }
           final rows = store.entries
               .where(
                 (entry) =>
-                    entry.item.type == widget.type &&
                     locks.allowsItem(entry.item) &&
                     !locks.titleHidden(entry.item) &&
                     (entry.item.categoryId == null ||
@@ -179,7 +182,7 @@ class _RecordingRowState extends State<_RecordingRow> {
                   style: const TextStyle(fontSize: 14),
                 ),
                 Text(
-                  '${widget.recording.created.toLocal().toString().split('.').first}  -  ${(widget.recording.bytes / 1048576).toStringAsFixed(1)} MB',
+                  '${widget.recording.item.type.label} \u00b7 ${widget.recording.created.toLocal().toString().split('.').first}  -  ${(widget.recording.bytes / 1048576).toStringAsFixed(1)} MB',
                   style: const TextStyle(fontSize: 12),
                 ),
               ],

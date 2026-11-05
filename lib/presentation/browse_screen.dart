@@ -50,7 +50,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
     final next = !cardMode;
     if (next) {
       final saved = await myList.items(widget.type).then(visibleSavedItems);
-      final watching = await history.items(widget.type).then(visibleSavedItems);
+      final watching = await history
+          .items(widget.type)
+          .then(visibleHistoryItems);
       initialMyList = Future.value(saved);
       initialContinue = Future.value(watching);
       preferredInitialRow = saved.isNotEmpty
@@ -386,7 +388,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         final saved = await myList.items(widget.type).then(visibleSavedItems);
         final watching = await history
             .items(widget.type)
-            .then(visibleSavedItems);
+            .then(visibleHistoryItems);
         initialMyList = Future.value(saved);
         initialContinue = Future.value(watching);
         preferredInitialRow = saved.isNotEmpty
@@ -408,6 +410,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
       widget.provider is LockedProvider
       ? (widget.provider as LockedProvider).visibleSavedItems(rows)
       : locks.visibleItems(rows);
+  Future<List<ContentItem>> visibleHistoryItems(List<ContentItem> rows) =>
+      widget.provider is LockedProvider
+      ? (widget.provider as LockedProvider).visibleSavedItems(
+          rows,
+          excludeConfiguredLocks: true,
+        )
+      : locks.visibleItems(rows, excludeConfiguredLocks: true);
   void historyChanged() {
     if (!mounted) return;
     setState(() {
@@ -416,7 +425,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       readyTitleRows.remove(1);
       historyRevision++;
       if (showingContinue) {
-        items = history.items(widget.type).then(visibleSavedItems);
+        items = history.items(widget.type).then(visibleHistoryItems);
       }
     });
   }
@@ -486,7 +495,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         items = myList.items(widget.type).then(visibleSavedItems);
       }
       if (showingContinue) {
-        items = history.items(widget.type).then(visibleSavedItems);
+        items = history.items(widget.type).then(visibleHistoryItems);
       }
     });
   }
@@ -532,7 +541,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     showingContinue = true;
     showingRecent = false;
     selected = Category('__continue__', 'Continue watching', widget.type);
-    items = history.items(widget.type).then(visibleSavedItems);
+    items = history.items(widget.type).then(visibleHistoryItems);
     search = '';
   });
   @override
@@ -721,7 +730,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         title: 'Continue watching',
         load: (_) =>
             initialContinue ??
-            history.items(widget.type).then(visibleSavedItems),
+            history.items(widget.type).then(visibleHistoryItems),
         onMore: selectContinue,
         onOpen: openItem,
       );
@@ -964,7 +973,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         setState(() {
           historyRevision++;
           if (showingContinue) {
-            items = history.items(widget.type).then(visibleSavedItems);
+            items = history.items(widget.type).then(visibleHistoryItems);
           }
         });
       }

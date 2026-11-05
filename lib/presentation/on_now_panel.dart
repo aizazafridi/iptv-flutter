@@ -25,12 +25,14 @@ class OnNowPanel extends StatefulWidget {
 class _OnNowPanelState extends State<OnNowPanel> {
   late final recent = LastLiveChannel.forProvider(widget.provider);
   late Future<List<ContentItem>> channels = load();
+  late final locks = CategoryLocks.forProvider(widget.provider);
   final guides = <String, Future<List<EpgProgramme>>>{};
   Timer? timer;
   @override
   void initState() {
     super.initState();
     recent.changes.addListener(refresh);
+    locks.addListener(refresh);
     timer = Timer.periodic(const Duration(minutes: 1), (_) => refresh());
   }
 
@@ -47,18 +49,18 @@ class _OnNowPanelState extends State<OnNowPanel> {
   void dispose() {
     timer?.cancel();
     recent.changes.removeListener(refresh);
+    locks.removeListener(refresh);
     super.dispose();
   }
 
   Future<List<ContentItem>> load() async {
     final rows = await recent.recentChannels();
-    final locks = CategoryLocks.forProvider(widget.provider);
     await locks.load();
     final p = widget.provider;
     final visible = p is LockedProvider
-        ? await p.visibleSavedItems(rows)
-        : await locks.visibleItems(rows);
-    return visible.take(3).toList();
+        ? await p.visibleSavedItems(rows, excludeConfiguredLocks: true)
+        : await locks.visibleItems(rows, excludeConfiguredLocks: true);
+    return visible.take(5).toList();
   }
 
   Future<List<EpgProgramme>> guide(ContentItem item) =>
@@ -154,7 +156,7 @@ class _OnNowPanelState extends State<OnNowPanel> {
                                                   ConnectionState.done
                                               ? 'Loading...'
                                               : 'Guide unavailable'),
-                                      maxLines: 2,
+                                      maxLines: 1,
                                       textAlign: TextAlign.right,
                                       overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(

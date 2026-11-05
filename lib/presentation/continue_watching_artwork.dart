@@ -1,4 +1,5 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import 'package:flutter/material.dart';
 import '../data/tmdb_artwork_service.dart';
 import '../domain/models.dart';
@@ -30,11 +31,10 @@ class _ContinueWatchingArtworkState extends State<ContinueWatchingArtwork> {
     color: const Color(0xff101722),
     child: widget.item.artwork == null
         ? const Center(child: Icon(Icons.movie_outlined, color: Colors.white38))
-        : CachedNetworkImage(
+        : SharedArtworkImage(
+            kind: ArtworkKind.episode,
             imageUrl: widget.item.artwork.toString(),
             fit: BoxFit.contain,
-            memCacheWidth: 480,
-            maxWidthDiskCache: 480,
             errorWidget: (_, _, _) => const Center(
               child: Icon(Icons.movie_outlined, color: Colors.white38),
             ),
@@ -45,13 +45,15 @@ class _ContinueWatchingArtworkState extends State<ContinueWatchingArtwork> {
     future: backdrop,
     builder: (context, snapshot) {
       final uri = snapshot.data;
+      if (snapshot.connectionState != ConnectionState.done) {
+        return const ColoredBox(color: Color(0xff101722));
+      }
       if (uri == null) return poster();
-      return CachedNetworkImage(
+      return SharedArtworkImage(
+        kind: ArtworkKind.episode,
         imageUrl: uri.toString(),
         fit: BoxFit.cover,
-        memCacheWidth: 480,
-        maxWidthDiskCache: 780,
-        placeholder: (_, _) => poster(),
+        placeholder: (_, _) => const ColoredBox(color: Color(0xff101722)),
         errorWidget: (_, _, _) => poster(),
       );
     },

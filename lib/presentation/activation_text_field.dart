@@ -5,7 +5,8 @@ import 'package:flutter/services.dart';
 class ActivationTextField extends StatefulWidget {
   final TextEditingController? controller;
   final InputDecoration? decoration;
-  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onChanged, onSubmitted;
+  final ValueChanged<bool>? onEditingChanged;
   final bool autofocus, enabled;
   final FocusNode? focusNode;
   final VoidCallback? onNavigateUp, onNavigateDown;
@@ -17,14 +18,16 @@ class ActivationTextField extends StatefulWidget {
     this.onNavigateDown,
     this.decoration,
     this.onChanged,
+    this.onSubmitted,
+    this.onEditingChanged,
     this.autofocus = false,
     this.enabled = true,
   });
   @override
-  State<ActivationTextField> createState() => _ActivationTextFieldState();
+  State<ActivationTextField> createState() => ActivationTextFieldState();
 }
 
-class _ActivationTextFieldState extends State<ActivationTextField> {
+class ActivationTextFieldState extends State<ActivationTextField> {
   bool editing = false;
   late final focus = widget.focusNode ?? FocusNode();
   void configureFocus() {
@@ -58,6 +61,7 @@ class _ActivationTextFieldState extends State<ActivationTextField> {
   void beginEditing() {
     if (!widget.enabled) return;
     setState(() => editing = true);
+    widget.onEditingChanged?.call(true);
     focus.requestFocus();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && focus.hasFocus) {
@@ -66,8 +70,11 @@ class _ActivationTextFieldState extends State<ActivationTextField> {
     });
   }
 
-  void finish() {
+  void finish({bool submitted = false}) {
+    if (!editing) return;
     setState(() => editing = false);
+    widget.onEditingChanged?.call(false);
+    if (submitted) widget.onSubmitted?.call(widget.controller?.text ?? '');
     SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
@@ -103,6 +110,6 @@ class _ActivationTextFieldState extends State<ActivationTextField> {
     onChanged: widget.onChanged,
     onTap: beginEditing,
     textInputAction: TextInputAction.done,
-    onEditingComplete: finish,
+    onEditingComplete: () => finish(submitted: true),
   );
 }

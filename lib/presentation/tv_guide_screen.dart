@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import '../domain/models.dart';
 import '../domain/iptv_provider.dart';
@@ -112,6 +113,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
   }
 
   final schedules = <String, Future<List<EpgProgramme>>>{};
+  // Bound EPG work so guide loading does not flood the active live connection.
+  final epgLanes = <Future<void>>[Future.value(), Future.value()];
+  int nextEpgLane = 0;
   final controller = TextEditingController();
   final horizontal = ScrollController();
   final offset = ValueNotifier<double>(0);
@@ -243,7 +247,13 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
       schedules.putIfAbsent(item.id, () async {
         final p = widget.provider;
         if (p is! EpgProvider) return [];
-        final rows = await (p as EpgProvider).getEpg(item);
+        final lane = nextEpgLane++ % epgLanes.length;
+        final request = epgLanes[lane].then((_) async {
+          if (!mounted) return <EpgProgramme>[];
+          return (p as EpgProvider).getEpg(item);
+        });
+        epgLanes[lane] = request.then<void>((_) {}, onError: (Object _) {});
+        final rows = await request;
         return rows
             .where(
               (row) =>
@@ -801,6 +811,7 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                             );
                           }
                           return ListView.builder(
+                            scrollCacheExtent: const ScrollCacheExtent.pixels(0),
                             controller: vertical,
                             itemExtent: 52,
                             itemCount: visible.length,

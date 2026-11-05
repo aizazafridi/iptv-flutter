@@ -3,27 +3,36 @@ import 'live_favourite_dialogs.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import '../application/category_locks.dart';
 import '../application/my_list.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'activation_text_field.dart';
 import 'lock_password_dialog.dart';
-import 'my_list_button.dart';
 import 'widgets.dart';
+
+/// Retained by the player while individual browser overlays are recreated.
+class LiveChannelBrowserSelection {
+  String? categoryId, groupId;
+}
 
 /// Browsing owns only UI state: the existing player keeps its engine and surface.
 class LiveChannelBrowser extends StatefulWidget {
+  final bool embedded;
   final Future<List<ContentItem>> Function() load;
   final IptvProvider? provider;
   final String? currentId, categoryId;
+  final LiveChannelBrowserSelection? selection;
   final Future<bool> Function(ContentItem)? onSelect;
   const LiveChannelBrowser({
     super.key,
+    this.embedded = false,
     required this.load,
     this.provider,
     this.currentId,
     this.categoryId,
+    this.selection,
     this.onSelect,
   });
   @override
@@ -34,7 +43,14 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
   static const rowHeight = 86.0;
   final scroll = ScrollController();
   final categoryScroll = ScrollController();
+  final groupScroll = ScrollController();
   final myListFocus = FocusNode(debugLabel: 'channel My List');
+  final allModeFocus = FocusNode(debugLabel: 'channel All Channels');
+  final searchFocus = FocusNode(debugLabel: 'channel search');
+  final categorySearchInput = FocusNode(debugLabel: 'category search input');
+  final channelSearchInput = FocusNode(debugLabel: 'channel search input');
+  String lastProviderCategory = 'all', channelQuery = '';
+  bool searchingChannels = false;
   final nodes = <String, FocusNode>{};
   final groupNodes = <String, FocusNode>{};
   final categoryNodes = <String, FocusNode>{};
@@ -44,6 +60,8 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
   late Future<void> request;
   String selectedCategory = 'all', query = '';
   String? focusedId, error;
+  String? selectedHere;
+  late String? playingId = widget.currentId;
   bool choosingCategory = false, searching = false, busy = false;
   LiveFavouriteGroups? get groups => widget.provider == null
       ? null
@@ -77,7 +95,12 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
       /* Channels remain usable if categories are unavailable. */
     }
     if (!mounted) return;
-    if (categories.any((c) => c.id == widget.categoryId)) {
+    final retained = widget.selection?.categoryId;
+    if (retained == 'favorites' && widget.provider != null) {
+      selectedCategory = 'favorites';
+    } else if (retained == 'all' || categories.any((c) => c.id == retained)) {
+      selectedCategory = retained!;
+    } else if (categories.any((c) => c.id == widget.categoryId)) {
       selectedCategory = widget.categoryId!;
     }
     await loadCategory(selectedCategory, initial: true);
@@ -110,9 +133,16 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     setState(() {});
   }
 
-  List<ContentItem> get visible => selectedCategory == 'favorites'
-      ? groups!.channels(groups!.selectedGroup, rows)
-      : rows;
+  List<ContentItem> get visible =>
+      (selectedCategory == 'favorites'
+              ? groups!.channels(groups!.selectedGroup, rows)
+              : rows)
+          .where(
+            (item) => item.name.toLowerCase().contains(
+              channelQuery.trim().toLowerCase(),
+            ),
+          )
+          .toList();
   List<Category> get tabs =>
       [const Category('all', 'All', ContentType.live), ...categories]
           .where(
@@ -150,6 +180,12 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
         result = await widget.load();
       } else if (id == 'favorites') {
         await groups!.load();
+        if (initial && widget.selection?.groupId != null) {
+          final saved = widget.selection!.groupId!;
+          groups!.selectedGroup = groups!.exists(saved)
+              ? saved
+              : LiveFavouriteGroups.all;
+        }
         result = await MyList.forProvider(provider).items(ContentType.live);
       } else if (id == 'all') {
         result = await widget.load();
@@ -175,6 +211,13 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
       setState(() {
         rows = result;
         selectedCategory = id;
+        if (id != 'favorites') lastProviderCategory = id;
+        channelQuery = '';
+        searchingChannels = false;
+        widget.selection?.categoryId = id;
+        if (id == 'favorites') {
+          widget.selection?.groupId = groups!.selectedGroup;
+        }
         choosingCategory = false;
         busy = false;
         query = '';
@@ -219,30 +262,59 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     });
   }
 
+  List<Category>? measuredCategories;
+  TextScaler? measuredScaler;
+  TextDirection? measuredDirection;
+  double? measuredCategoryWidth;
   double get categoryWidth {
-    var width = 126.0;
-    for (final category in tabs) {
-      final painter = TextPainter(
-        text: TextSpan(
-          text: category.name,
-          style: const TextStyle(fontSize: 12),
-        ),
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-      )..layout();
-      if (painter.width + 38 > width) width = painter.width + 38;
-      painter.dispose();
+    final scaler = MediaQuery.textScalerOf(context);
+    final direction = Directionality.of(context);
+    if (identical(measuredCategories, categories) &&
+        measuredScaler == scaler &&
+        measuredDirection == direction &&
+        measuredCategoryWidth != null) {
+      return measuredCategoryWidth!;
     }
-    return width;
+    var width = 126.0;
+    // Measure the provider labels once, not once per group on each focus change.
+    // Search filters do not change the shared tab width or force new layouts.
+    final painter = TextPainter(textDirection: direction, textScaler: scaler);
+    for (final category in categories) {
+      painter.text = TextSpan(
+        text: category.name,
+        style: const TextStyle(fontSize: 12),
+      );
+      painter.layout();
+      if (painter.width + 38 > width) width = painter.width + 38;
+    }
+    painter.dispose();
+    measuredCategories = categories;
+    measuredScaler = scaler;
+    measuredDirection = direction;
+    return measuredCategoryWidth = width;
+  }
+
+  void focusActiveCategory() {
+    if (selectedCategory == 'favorites') {
+      focusGroups();
+    } else {
+      focusCategories();
+    }
   }
 
   void focusCategories() {
     if (busy) return;
-    setState(() => choosingCategory = true);
+    setState(() {
+      choosingCategory = true;
+    });
     focusCategory(tabs.indexWhere((c) => c.id == selectedCategory));
   }
 
   void focusCategory(int index) {
+    if (tabs.isEmpty) {
+      searchFocus.requestFocus();
+      return;
+    }
     index = index.clamp(0, tabs.length - 1);
     final id = tabs[index].id;
     final target = index * categoryWidth;
@@ -271,7 +343,10 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     final id = groups!.exists(groups!.selectedGroup)
         ? groups!.selectedGroup
         : LiveFavouriteGroups.all;
-    groupNodes[id]?.requestFocus();
+    if (busy) return;
+    setState(() => choosingCategory = true);
+    final index = groupIds.indexOf(id);
+    focusGroupAt(index < 0 ? 0 : index);
   }
 
   void returnToChannels() {
@@ -282,12 +357,20 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
 
   Future<void> select(ContentItem item) async {
     if (busy) return;
+    if (selectedHere == item.id && playingId == item.id) {
+      Navigator.pop(context, item);
+      return;
+    }
     setState(() => busy = true);
     try {
       final success = widget.onSelect == null || await widget.onSelect!(item);
       if (!mounted) return;
       if (success) {
-        Navigator.pop(context, item);
+        setState(() {
+          playingId = item.id;
+          selectedHere = item.id;
+          busy = false;
+        });
       } else {
         setState(() => busy = false);
       }
@@ -303,32 +386,65 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
 
   Future<void> actions(ContentItem item) async {
     if (widget.provider == null || busy) return;
-    await showDialog<void>(
+    final previous = visible.indexWhere((c) => c.id == item.id);
+    final saved = MyList.forProvider(widget.provider!).contains(item);
+    final edit = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(item.name, style: const TextStyle(fontSize: 18)),
-        content: MyListButton(provider: widget.provider!, item: item),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
+      builder: (context) => liveGroupsTheme(
+        context,
+        SimpleDialog(
+          title: Text(item.name, style: const TextStyle(fontSize: 18)),
+          children: [
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(saved ? 'Manage My List' : 'Add to My List'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
       ),
     );
-    if (mounted) focusChannel(visible.indexWhere((c) => c.id == item.id));
+    if (edit == true && mounted) {
+      await showLiveFavouriteDialog(context, widget.provider!, item);
+    }
+    if (mounted) {
+      final index = visible.indexWhere((c) => c.id == item.id);
+      focusChannel(
+        index < 0
+            ? previous.clamp(0, visible.isNotEmpty ? visible.length - 1 : 0)
+            : index,
+      );
+    }
   }
 
+  final epgLanes = <Future<void>>[Future.value(), Future.value()];
+  int nextEpgLane = 0;
   Future<List<EpgProgramme>> guide(ContentItem item) =>
-      guides.putIfAbsent(item.id, () async {
-        try {
-          final provider = widget.provider;
-          return provider is EpgProvider
-              ? await (provider as EpgProvider).getEpg(item)
-              : [];
-        } catch (_) {
-          return [];
-        }
+      guides.putIfAbsent(item.id, () {
+        final lane = nextEpgLane++ % epgLanes.length;
+        final requestedRevision = revision;
+        final requestedGroup = groups?.selectedGroup;
+        final request = epgLanes[lane].then((_) async {
+          if (!mounted ||
+              revision != requestedRevision ||
+              groups?.selectedGroup != requestedGroup) {
+            guides.remove(item.id);
+            return <EpgProgramme>[];
+          }
+          try {
+            final provider = widget.provider;
+            return provider is EpgProvider
+                ? await (provider as EpgProvider).getEpg(item)
+                : <EpgProgramme>[];
+          } catch (_) {
+            return <EpgProgramme>[];
+          }
+        });
+        epgLanes[lane] = request.then<void>((_) {});
+        return request;
       });
 
   @override
@@ -340,8 +456,13 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     clock?.cancel();
     scroll.dispose();
     categoryScroll.dispose();
+    groupScroll.dispose();
     for (final node in [
       myListFocus,
+      allModeFocus,
+      searchFocus,
+      categorySearchInput,
+      channelSearchInput,
       ...nodes.values,
       ...categoryNodes.values,
       ...groupNodes.values,
@@ -351,37 +472,303 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     super.dispose();
   }
 
+  Widget categoryStrip() => SizedBox(
+    height: 42,
+    child: ListView.builder(
+      controller: categoryScroll,
+      scrollDirection: Axis.horizontal,
+      itemExtent: categoryWidth,
+      itemCount: tabs.length,
+      itemBuilder: (_, index) {
+        final category = tabs[index];
+        final node = categoryNodes.putIfAbsent(
+          category.id,
+          () => FocusNode(debugLabel: 'channel category ${category.id}'),
+        );
+        return Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: Focus(
+            focusNode: node,
+            onKeyEvent: (_, event) {
+              if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                return KeyEventResult.ignored;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                focusCategory(index - 1);
+                return KeyEventResult.handled;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                focusCategory(index + 1);
+                return KeyEventResult.handled;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                if (searching) {
+                  categorySearchInput.requestFocus();
+                } else {
+                  allModeFocus.requestFocus();
+                }
+                return KeyEventResult.handled;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                returnToChannels();
+                return KeyEventResult.handled;
+              }
+              if (event is KeyDownEvent &&
+                  (event.logicalKey == LogicalKeyboardKey.select ||
+                      event.logicalKey == LogicalKeyboardKey.enter)) {
+                if (!busy) unawaited(loadCategory(category.id));
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: channelTab(
+              category.name,
+              node,
+              selected: category.id == selectedCategory,
+              onTap: () => loadCategory(category.id),
+            ),
+          ),
+        );
+      },
+    ),
+  );
+  Future<void> newGroup() async {
+    final id = await showLiveGroupName(context, groups!);
+    if (mounted && id != null) {
+      setState(() {
+        groups!.selectedGroup = id;
+        widget.selection?.groupId = id;
+      });
+      focusGroups();
+    }
+  }
+
+  Widget channelTab(
+    String label,
+    FocusNode node, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) => ListenableBuilder(
+    listenable: node,
+    builder: (_, _) => Material(
+      color: node.hasFocus
+          ? const Color(0xff30445d)
+          : selected
+          ? const Color(0xff293546)
+          : const Color(0xff252f3d),
+      borderRadius: BorderRadius.circular(9),
+      child: InkWell(
+        canRequestFocus: false,
+        onTap: busy
+            ? null
+            : () {
+                node.requestFocus();
+                onTap();
+              },
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: node.hasFocus
+                  ? const Color(0xff64b5f6)
+                  : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  List<String> get groupIds => [
+    LiveFavouriteGroups.all,
+    ...groups!.groups.map((g) => g.id),
+  ];
+
+  void focusGroupAt(int index) {
+    final ids = groupIds;
+    final targetIndex = index.clamp(0, ids.length - 1);
+    final id = ids[targetIndex];
+    if (groupScroll.hasClients) {
+      final start = targetIndex * categoryWidth;
+      final position = groupScroll.position;
+      final end = start + categoryWidth;
+      final target = start < position.pixels
+          ? start
+          : end > position.pixels + position.viewportDimension
+          ? end - position.viewportDimension
+          : position.pixels;
+      if ((target - position.pixels).abs() > .5) {
+        unawaited(
+          groupScroll.animateTo(
+            target.clamp(0, position.maxScrollExtent),
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+          ),
+        );
+      }
+    }
+    final node = groupNodes[id];
+    if (node?.context != null) {
+      node!.requestFocus();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && choosingCategory) groupNodes[id]?.requestFocus();
+      });
+    }
+  }
+
+  Widget groupStrip() => SizedBox(
+    height: 42,
+    child: SingleChildScrollView(
+      controller: groupScroll,
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final id in groupIds)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: SizedBox(
+                width: categoryWidth - 6,
+                child: Focus(
+                  focusNode: groupNodes.putIfAbsent(
+                    id,
+                    () => FocusNode(debugLabel: 'channel group $id'),
+                  ),
+                  onKeyEvent: (node, event) {
+                    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                      return KeyEventResult.ignored;
+                    }
+                    final index = groupIds.indexOf(id);
+                    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                      focusGroupAt(index - 1);
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                      if (index + 1 < groupIds.length) {
+                        focusGroupAt(index + 1);
+                      } else {
+                        node.nextFocus();
+                      }
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                      returnToChannels();
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                      myListFocus.requestFocus();
+                      return KeyEventResult.handled;
+                    }
+                    if (event is KeyDownEvent &&
+                        (event.logicalKey == LogicalKeyboardKey.enter ||
+                            event.logicalKey == LogicalKeyboardKey.select)) {
+                      if (!busy) selectGroup(id);
+                      return KeyEventResult.handled;
+                    }
+                    return KeyEventResult.ignored;
+                  },
+                  child: channelTab(
+                    groups!.name(id),
+                    groupNodes[id]!,
+                    selected:
+                        (groups!.exists(groups!.selectedGroup)
+                            ? groups!.selectedGroup
+                            : LiveFavouriteGroups.all) ==
+                        id,
+                    onTap: () => selectGroup(id),
+                  ),
+                ),
+              ),
+            ),
+          TextButton(onPressed: newGroup, child: const Text('+ New Group')),
+          TextButton(
+            onPressed: () async {
+              await showLiveGroupManager(context, widget.provider!);
+              if (mounted) focusGroups();
+            },
+            child: const Text('Manage Groups'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  void selectGroup(String id) => setState(() {
+    groups!.selectedGroup = id;
+    widget.selection?.groupId = id;
+    if (scroll.hasClients) scroll.jumpTo(0);
+  });
+
+  void openSearch({required bool channels}) {
+    setState(() {
+      searchingChannels = channels;
+      searching = !channels;
+      channelQuery = '';
+      query = '';
+      if (categoryScroll.hasClients) categoryScroll.jumpTo(0);
+      if (scroll.hasClients) scroll.jumpTo(0);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      (channels ? channelSearchInput : categorySearchInput).requestFocus();
+    });
+  }
+
+  Future<void> option(String value) async {
+    if (value == 'channel') {
+      final item =
+          visible.where((c) => c.id == focusedId).firstOrNull ??
+          visible.where((c) => c.id == playingId).firstOrNull ??
+          visible.firstOrNull;
+      if (item != null) await actions(item);
+    } else if (value == 'search') {
+      openSearch(channels: true);
+    } else if (value == 'manage') {
+      await showLiveGroupManager(context, widget.provider!);
+      if (mounted) focusGroups();
+    } else if (value == 'create') {
+      await newGroup();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final items = visible;
-    return Dialog(
-      alignment: Alignment.centerLeft,
-      backgroundColor: Colors.transparent,
-      elevation: 0,
-      insetPadding: const EdgeInsets.all(12),
-      child: Container(
-        key: const ValueKey('live-channel-browser-panel'),
-        width: MediaQuery.sizeOf(context).width * .45,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xf21a2029),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Channels',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
+    final panel = Container(
+      key: const ValueKey('live-channel-browser-panel'),
+      width: widget.embedded
+          ? double.infinity
+          : MediaQuery.sizeOf(context).width * .45,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xf21b222d),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Channels',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
                   ),
                 ),
+              ),
+              if (selectedCategory != 'favorites')
                 TextButton.icon(
                   onPressed: busy ? null : focusCategories,
                   icon: const Icon(Icons.folder_outlined, size: 16),
@@ -390,286 +777,218 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
                     style: TextStyle(fontSize: 11),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Search categories',
-                  onPressed: () => setState(() {
-                    searching = !searching;
-                    if (!searching) query = '';
-                  }),
-                  icon: const Icon(Icons.search, color: Colors.white70),
-                ),
-              ],
-            ),
-            if (searching)
-              ActivationTextField(
-                autofocus: true,
-                decoration: const InputDecoration(
-                  hintText: 'Search categories',
-                  isDense: true,
-                ),
-                onChanged: (value) => setState(() {
-                  query = value;
-                  if (categoryScroll.hasClients) categoryScroll.jumpTo(0);
-                }),
+              IconButton(
+                focusNode: searchFocus,
+                tooltip: selectedCategory == 'favorites'
+                    ? 'Search channels'
+                    : 'Search categories',
+                onPressed: () =>
+                    openSearch(channels: selectedCategory == 'favorites'),
+                icon: const Icon(Icons.search, color: Colors.white70),
               ),
-            SizedBox(
-              height: 42,
-              child: ListView.builder(
-                controller: categoryScroll,
-                scrollDirection: Axis.horizontal,
-                itemExtent: categoryWidth,
-                itemCount: tabs.length,
-                itemBuilder: (context, index) {
-                  final category = tabs[index];
-                  final categoryFocus = categoryNodes.putIfAbsent(
-                    category.id,
-                    () => FocusNode(
-                      debugLabel: 'channel category ${category.id}',
+              IconButton(
+                tooltip: 'Search channels',
+                icon: const Icon(Icons.manage_search),
+                onPressed: () => openSearch(channels: true),
+              ),
+              if (widget.provider != null)
+                PopupMenuButton<String>(
+                  tooltip: 'Channel options',
+                  icon: const Icon(Icons.more_vert, color: Colors.white70),
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'channel',
+                      child: Text('Channel actions'),
                     ),
-                  );
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: Focus(
-                      focusNode: categoryFocus,
-                      onKeyEvent: (_, event) {
-                        if (event is! KeyDownEvent &&
-                            event is! KeyRepeatEvent) {
-                          return KeyEventResult.ignored;
-                        }
-                        if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-                          focusCategory(index - 1);
-                          return KeyEventResult.handled;
-                        }
-                        if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-                          focusCategory(index + 1);
-                          return KeyEventResult.handled;
-                        }
-                        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                          if (widget.provider != null) {
-                            myListFocus.requestFocus();
-                          } else {
-                            returnToChannels();
-                          }
-                          return KeyEventResult.handled;
-                        }
-                        if (event is KeyDownEvent &&
-                            (event.logicalKey == LogicalKeyboardKey.select ||
-                                event.logicalKey == LogicalKeyboardKey.enter)) {
-                          if (!busy) unawaited(loadCategory(category.id));
-                          return KeyEventResult.handled;
-                        }
-                        return KeyEventResult.ignored;
-                      },
-                      child: ListenableBuilder(
-                        listenable: categoryFocus,
-                        builder: (context, _) => Material(
-                          borderRadius: BorderRadius.circular(9),
-                          color: categoryFocus.hasFocus
-                              ? const Color(0xff354962)
-                              : category.id == selectedCategory
-                              ? const Color(0xff293546)
-                              : const Color(0xff202935),
-                          child: InkWell(
-                            canRequestFocus: false,
-                            borderRadius: BorderRadius.circular(9),
-                            onTap: busy
-                                ? null
-                                : () => loadCategory(category.id),
-                            child: Container(
-                              alignment: Alignment.center,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 9,
-                              ),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(9),
-                                border: Border.all(
-                                  color: categoryFocus.hasFocus
-                                      ? const Color(0xff9acaff)
-                                      : Colors.transparent,
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Text(
-                                category.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
+                    const PopupMenuItem(
+                      value: 'search',
+                      child: Text('Search channels'),
+                    ),
+                    if (selectedCategory == 'favorites') ...[
+                      const PopupMenuItem(
+                        value: 'manage',
+                        child: Text('Manage Groups'),
                       ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            if (widget.provider != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Focus(
-                  canRequestFocus: false,
-                  onKeyEvent: (_, event) {
-                    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-                      return KeyEventResult.ignored;
-                    }
-                    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                      focusCategories();
-                      return KeyEventResult.handled;
-                    }
-                    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                      if (selectedCategory == 'favorites') {
-                        focusGroups();
-                      } else {
-                        returnToChannels();
-                      }
-                      return KeyEventResult.handled;
-                    }
-                    return KeyEventResult.ignored;
-                  },
-                  child: TextButton.icon(
-                    focusNode: myListFocus,
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      backgroundColor: selectedCategory == 'favorites'
-                          ? const Color(0xff30465d)
-                          : const Color(0xff202935),
-                    ),
-                    onPressed: busy ? null : () => loadCategory('favorites'),
-                    icon: const Icon(Icons.check, size: 16),
-                    label: const Text(
-                      'My List',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ),
-              ),
-            if (selectedCategory == 'favorites')
-              SizedBox(
-                height: 42,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      for (final id in [
-                        LiveFavouriteGroups.all,
-                        ...groups!.groups.map((g) => g.id),
-                      ])
-                        Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: Focus(
-                            canRequestFocus: false,
-                            onKeyEvent: (_, event) {
-                              if (event is KeyDownEvent &&
-                                  event.logicalKey ==
-                                      LogicalKeyboardKey.arrowDown) {
-                                returnToChannels();
-                                return KeyEventResult.handled;
-                              }
-                              if (event is KeyDownEvent &&
-                                  event.logicalKey ==
-                                      LogicalKeyboardKey.arrowUp) {
-                                myListFocus.requestFocus();
-                                return KeyEventResult.handled;
-                              }
-                              return KeyEventResult.ignored;
-                            },
-                            child: ChoiceChip(
-                              focusNode: groupNodes.putIfAbsent(
-                                id,
-                                () => FocusNode(),
-                              ),
-                              label: Text(
-                                id == LiveFavouriteGroups.all
-                                    ? 'All My List'
-                                    : groups!.name(id),
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                              selected:
-                                  (groups!.exists(groups!.selectedGroup)
-                                      ? groups!.selectedGroup
-                                      : LiveFavouriteGroups.all) ==
-                                  id,
-                              onSelected: (_) => setState(() {
-                                groups!.selectedGroup = id;
-                                if (scroll.hasClients) scroll.jumpTo(0);
-                              }),
-                            ),
-                          ),
-                        ),
-                      TextButton(
-                        onPressed: () => showLiveGroupName(context, groups!),
-                        child: const Text('+ New Group'),
-                      ),
-                      TextButton(
-                        onPressed: () =>
-                            showLiveGroupManager(context, widget.provider!),
-                        child: const Text('Manage Groups'),
+                      const PopupMenuItem(
+                        value: 'create',
+                        child: Text('Create New Group'),
                       ),
                     ],
-                  ),
+                  ],
+                  onSelected: option,
                 ),
+            ],
+          ),
+          if (searchingChannels)
+            ActivationTextField(
+              key: const ValueKey('live-channel-search-input'),
+              autofocus: true,
+              focusNode: channelSearchInput,
+              onNavigateUp: searchFocus.requestFocus,
+              onNavigateDown: () => allModeFocus.requestFocus(),
+              onSubmitted: (_) => returnToChannels(),
+              decoration: const InputDecoration(
+                hintText: 'Search channels',
+                isDense: true,
               ),
-            const Divider(color: Colors.white24, height: 18),
-            if (busy) const LinearProgressIndicator(minHeight: 2),
-            if (error != null)
-              Padding(
-                padding: const EdgeInsets.all(8),
-                child: Text(error!, style: const TextStyle(fontSize: 12)),
+              onChanged: (value) => setState(() {
+                channelQuery = value;
+                if (scroll.hasClients) scroll.jumpTo(0);
+              }),
+            ),
+          if (searching && selectedCategory != 'favorites')
+            ActivationTextField(
+              key: const ValueKey('live-category-search-input'),
+              autofocus: true,
+              focusNode: categorySearchInput,
+              onNavigateUp: searchFocus.requestFocus,
+              onNavigateDown: focusCategories,
+              onSubmitted: (_) => focusCategories(),
+              decoration: const InputDecoration(
+                hintText: 'Search categories',
+                isDense: true,
               ),
-            Expanded(
-              child: items.isEmpty
-                  ? Center(
-                      child: busy
-                          ? const CircularProgressIndicator()
-                          : const Text('No channels available'),
-                    )
-                  : Scrollbar(
-                      controller: scroll,
-                      child: ListView.builder(
-                        controller: scroll,
-                        itemExtent: rowHeight,
-                        itemCount: items.length,
-                        itemBuilder: (context, index) {
-                          final item = items[index];
-                          return _ChannelRow(
-                            key: ValueKey(item.id),
-                            item: item,
-                            number: rows.indexOf(item) + 1,
-                            current: widget.currentId == item.id,
-                            node: nodes.putIfAbsent(item.id, () => FocusNode()),
-                            epg: guide(item),
-                            onFocus: () => focusedId = item.id,
-                            onUp: () => index == 0
-                                ? (selectedCategory == 'favorites'
-                                      ? focusGroups()
-                                      : focusCategories())
-                                : focusChannel(index - 1),
-                            onDown: () => focusChannel(index + 1),
-                            onLeft: focusCategories,
-                            onSelect: busy ? null : () => select(item),
-                            onActions: () => actions(item),
-                          );
-                        },
-                      ),
+              onChanged: (value) => setState(() {
+                query = value;
+                if (categoryScroll.hasClients) categoryScroll.jumpTo(0);
+              }),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Focus(
+              canRequestFocus: false,
+              onKeyEvent: (_, event) {
+                if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                  return KeyEventResult.ignored;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  if (selectedCategory == 'favorites') {
+                    focusGroups();
+                  } else {
+                    focusCategories();
+                  }
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  if (searchingChannels) {
+                    channelSearchInput.requestFocus();
+                  } else if (searching) {
+                    categorySearchInput.requestFocus();
+                  } else {
+                    searchFocus.requestFocus();
+                  }
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: Row(
+                children: [
+                  TextButton.icon(
+                    focusNode: allModeFocus,
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: selectedCategory != 'favorites'
+                          ? const Color(0xff30445d)
+                          : const Color(0xff252f3d),
                     ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                choosingCategory
-                    ? 'Categories: Left/Right browse, OK select, Down channels'
-                    : 'Channels: Up/Down browse, Left categories, OK watch, Back close',
-                maxLines: 2,
-                style: TextStyle(fontSize: 10, color: Colors.white60),
+                    onPressed: busy
+                        ? null
+                        : () => loadCategory(lastProviderCategory),
+                    icon: const Icon(Icons.list, size: 18),
+                    label: const Text('All Channels'),
+                  ),
+                  if (widget.provider != null) ...[
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      focusNode: myListFocus,
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: selectedCategory == 'favorites'
+                            ? const Color(0xff30445d)
+                            : const Color(0xff252f3d),
+                      ),
+                      onPressed: busy ? null : () => loadCategory('favorites'),
+                      icon: const Icon(Icons.check, size: 18),
+                      label: const Text('My List'),
+                    ),
+                  ],
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+          if (selectedCategory == 'favorites')
+            groupStrip()
+          else
+            categoryStrip(),
+          const Divider(color: Colors.white24, height: 18),
+          if (busy) const LinearProgressIndicator(minHeight: 2),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(error!, style: const TextStyle(fontSize: 12)),
+            ),
+          Expanded(
+            child: items.isEmpty
+                ? Center(
+                    child: busy
+                        ? const CircularProgressIndicator()
+                        : const Text('No channels available'),
+                  )
+                : Scrollbar(
+                    controller: scroll,
+                    child: ListView.builder(
+                      controller: scroll,
+                      scrollCacheExtent: const ScrollCacheExtent.pixels(0),
+                      itemExtent: rowHeight,
+                      itemCount: items.length,
+                      itemBuilder: (_, index) {
+                        final item = items[index];
+                        return _ChannelRow(
+                          key: ValueKey(item.id),
+                          item: item,
+                          number: rows.indexOf(item) + 1,
+                          current: playingId == item.id,
+                          node: nodes.putIfAbsent(item.id, () => FocusNode()),
+                          epg: guide(item),
+                          onFocus: () => focusedId = item.id,
+                          onUp: () => index == 0
+                              ? (selectedCategory == 'favorites'
+                                    ? focusGroups()
+                                    : focusCategories())
+                              : focusChannel(index - 1),
+                          onDown: () => focusChannel(index + 1),
+                          onLeft: focusActiveCategory,
+                          onSelect: busy ? null : () => select(item),
+                          onActions: () => actions(item),
+                        );
+                      },
+                    ),
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              choosingCategory
+                  ? 'Left/Right browse, OK select, Down channels'
+                  : 'Up/Down browse, Left categories or groups, OK watch, Menu channel actions, Back close',
+              maxLines: 2,
+              style: const TextStyle(fontSize: 10, color: Colors.white60),
+            ),
+          ),
+        ],
       ),
+    );
+    final themed = RepaintBoundary(
+      key: const ValueKey('live-channel-selector-paint'),
+      child: liveGroupsTheme(context, panel),
+    );
+    if (widget.embedded) return themed;
+    return Dialog(
+      alignment: Alignment.centerLeft,
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.all(12),
+      child: themed,
     );
   }
 }
@@ -708,6 +1027,12 @@ class _ChannelRowState extends State<_ChannelRow> {
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
+      if (event is KeyDownEvent &&
+          (event.logicalKey == LogicalKeyboardKey.contextMenu ||
+              event.logicalKey == LogicalKeyboardKey.f10)) {
+        widget.onActions();
+        return KeyEventResult.handled;
+      }
       if (event is KeyDownEvent && !pressed) {
         pressed = true;
         longPressed = false;

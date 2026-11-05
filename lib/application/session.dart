@@ -1,3 +1,6 @@
+import '../data/locked_provider.dart';
+import 'profile_artwork_warmup.dart';
+import 'my_list.dart';
 import 'category_locks.dart';
 import 'recent_catalog_cache.dart';
 import 'package:flutter/foundation.dart';
@@ -182,6 +185,8 @@ class Session extends ChangeNotifier {
         ContentType.movies,
         ContentType.series,
       ].where(candidate.supportedTypes.contains).toList();
+      final connected = candidate;
+      final firstArtwork = <ContentItem>[];
       var completed = 0;
       loadingProgress = 0.3;
       loadingMessage = 'Loading';
@@ -189,19 +194,42 @@ class Session extends ChangeNotifier {
       await Future.wait(
         types.map((type) async {
           try {
-            await RecentCatalogCache.load(candidate!, type);
+            final recent = await RecentCatalogCache.load(connected, type);
+            var watching = await WatchHistory.forProvider(
+              connected,
+            ).items(type);
+            var saved = await MyList.forProvider(connected).items(type);
+            if (connected is LockedProvider) {
+              watching = await connected.visibleSavedItems(
+                watching,
+                excludeConfiguredLocks: true,
+              );
+              saved = await connected.visibleSavedItems(
+                saved,
+                excludeConfiguredLocks: true,
+              );
+            }
+            final batch = <String, ContentItem>{};
+            for (final item in [...watching, ...saved, ...recent]) {
+              batch.putIfAbsent(item.id, () => item);
+              if (batch.length == 8) break;
+            }
+            firstArtwork.addAll(batch.values);
           } catch (_) {
             /* Browsing can retry an unavailable catalogue. */
           }
           completed++;
           loadingProgress = types.isEmpty
               ? 1
-              : 0.3 + 0.7 * completed / types.length;
+              : 0.3 + 0.55 * completed / types.length;
           loadingMessage = 'Loading';
           _notify();
         }),
       );
       if (_disposed) return;
+      await warmProfileArtwork(firstArtwork);
+      loadingProgress = 1;
+      _notify();
     } on ProviderException catch (exception) {
       candidate?.dispose();
       error = exception.message;

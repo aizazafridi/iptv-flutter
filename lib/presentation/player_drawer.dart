@@ -31,11 +31,11 @@ Future<T?> showPlayerDrawer<T>(
         alignment: Alignment.centerRight,
         child: SizedBox(
           key: const ValueKey('player-drawer'),
-          width: (MediaQuery.sizeOf(context).width * (settings ? .32 : .30))
+          width: (MediaQuery.sizeOf(context).width * (settings ? .28 : .26))
               .clamp(
-                MediaQuery.sizeOf(context).width < 280
+                MediaQuery.sizeOf(context).width < 240
                     ? MediaQuery.sizeOf(context).width
-                    : 280.0,
+                    : 240.0,
                 MediaQuery.sizeOf(context).width,
               ),
           height: double.infinity,
@@ -45,7 +45,7 @@ Future<T?> showPlayerDrawer<T>(
               left: Radius.circular(9),
             ),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
                   Row(
@@ -55,7 +55,7 @@ Future<T?> showPlayerDrawer<T>(
                           title,
                           style: TextStyle(
                             fontFamily: 'Roboto',
-                            fontSize: settings ? 22 : 25,
+                            fontSize: settings ? 20 : 21,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -177,7 +177,7 @@ class _PlayerOptionsListState extends State<_PlayerOptionsList> {
               ),
             ],
             Padding(
-              padding: EdgeInsets.only(bottom: widget.settings ? 8 : 5),
+              padding: EdgeInsets.only(bottom: widget.settings ? 6 : 4),
               child: TextButton(
                 key: ValueKey('player-option-${option.id}'),
                 autofocus:
@@ -187,10 +187,10 @@ class _PlayerOptionsListState extends State<_PlayerOptionsList> {
                 style: ButtonStyle(
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   minimumSize: WidgetStatePropertyAll(
-                    Size(double.infinity, widget.settings ? 52 : 46),
+                    Size(double.infinity, widget.settings ? 44 : 38),
                   ),
                   maximumSize: WidgetStatePropertyAll(
-                    Size(double.infinity, widget.settings ? 52 : 46),
+                    Size(double.infinity, widget.settings ? 44 : 38),
                   ),
                   padding: const WidgetStatePropertyAll(
                     EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -237,7 +237,7 @@ class _PlayerOptionsListState extends State<_PlayerOptionsList> {
                                 softWrap: false,
                                 style: TextStyle(
                                   fontFamily: 'Roboto',
-                                  fontSize: widget.settings ? 15 : 17,
+                                  fontSize: widget.settings ? 13 : 14,
                                   height: 1.05,
                                 ),
                               ),
@@ -248,7 +248,7 @@ class _PlayerOptionsListState extends State<_PlayerOptionsList> {
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 fontFamily: 'Roboto',
-                                fontSize: widget.settings ? 15 : 17,
+                                fontSize: widget.settings ? 13 : 14,
                                 height: 1.05,
                               ),
                             ),

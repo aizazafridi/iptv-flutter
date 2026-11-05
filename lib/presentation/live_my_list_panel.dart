@@ -48,7 +48,11 @@ class _LiveMyListPanelState extends State<LiveMyListPanel> {
   }
 
   void reload() {
-    if (mounted) setState(() => loading = load());
+    if (mounted) {
+      setState(() {
+        loading = load();
+      });
+    }
   }
 
   @override

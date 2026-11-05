@@ -61,7 +61,7 @@ void main() {
           'TV Guide',
           'Search channels',
           'Record',
-          'Split screen',
+          'Multi View',
           'Aspect ratio',
           'Mute',
           'Catch-up',

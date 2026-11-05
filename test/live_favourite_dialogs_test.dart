@@ -30,14 +30,14 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.binding.handlePopRoute();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await tester.pumpAndSettle();
     final builds = engine.builds;
     await tester.tap(find.text('My List'));
     await tester.pumpAndSettle();
     expect(find.text('Add to My List'), findsOneWidget);
-    await tester.tap(find.text('All Favorites'));
-    await tester.tap(find.text('Save Changes'));
+    await tester.tap(find.text('General Favorites'));
+    await tester.tap(find.text('Save to My List'));
     await tester.pumpAndSettle();
     expect(MyList.forProvider(provider).contains(alpha), isTrue);
     expect(engine.opens, 1);
@@ -84,7 +84,7 @@ void main() {
       expect(FocusManager.instance.primaryFocus, isNotNull);
       await tester.tap(find.text('Sports'));
       await tester.tap(find.text('News'));
-      await tester.tap(find.text('Save Changes'));
+      await tester.tap(find.text('Save to My List'));
       await tester.pumpAndSettle();
       expect(list.contains(channels.first), isTrue);
       expect(groups.memberships('1'), {a, b});
@@ -127,7 +127,10 @@ void main() {
       await tester.enterText(find.byType(TextField), 'news');
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
-      expect(find.text('Choose a different group name.'), findsOneWidget);
+      expect(
+        find.text('A group named news already exists or is reserved.'),
+        findsOneWidget,
+      );
       await tester.tap(find.text('Cancel').last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));

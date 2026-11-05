@@ -211,9 +211,12 @@ void main() {
         }
         expect(focused(tester).item.id, '0-7');
         await press(tester, LogicalKeyboardKey.arrowDown);
-        expect(focused(tester).item.id, '0-15');
+        expect(focused(tester).item.id, '0-8');
         await press(tester, LogicalKeyboardKey.arrowUp);
-        expect(focused(tester).item.id, '0-7');
+        expect(focused(tester).item.id, '0-0');
+        for (var i = 0; i < 7; i++) {
+          await press(tester, LogicalKeyboardKey.arrowRight);
+        }
         await press(tester, LogicalKeyboardKey.enter);
         expect(find.byType(DetailsScreen), findsOneWidget);
         await tester.binding.handlePopRoute();
@@ -231,7 +234,7 @@ void main() {
     );
   }
   testWidgets(
-    'deep browsing restores row positions and returns to the off-screen hero',
+    'vertical category navigation starts at the first item and returns to the hero',
     (tester) async {
       tester.view.physicalSize = const Size(960, 540);
       tester.view.devicePixelRatio = 1;
@@ -250,7 +253,7 @@ void main() {
       for (var i = 0; i < 8; i++) {
         await press(tester, LogicalKeyboardKey.arrowUp);
       }
-      expect(focused(tester).item.id, '0-5');
+      expect(focused(tester).item.id, '0-0');
       await press(tester, LogicalKeyboardKey.arrowUp);
       expect(
         FocusManager.instance.primaryFocus!.debugLabel,

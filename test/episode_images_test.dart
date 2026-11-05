@@ -1,3 +1,4 @@
+import 'package:iptv_flutter/presentation/shared_artwork_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iptv_flutter/domain/models.dart';
@@ -9,7 +10,7 @@ import 'subtitle_test.dart' show FakeEngine;
 
 void main() {
   test(
-    'episode images accept alternate fields and fall back to series artwork',
+    'episode images accept alternate fields and leave invalid thumbnails for UI fallback',
     () async {
       final client = FixtureClient();
       client.fixture = {
@@ -53,7 +54,7 @@ void main() {
       expect(series.episodes.map((e) => e.artwork.toString()), [
         'https://example.com/one.jpg',
         'https://example.com/two.jpg',
-        'https://example.com/series.jpg',
+        'null',
       ]);
       provider.dispose();
     },
@@ -90,12 +91,15 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Episodes'));
+      await tester.tap(find.text('Episodes'));
       await tester.pumpAndSettle();
-      final artwork = tester.widget<Artwork>(find.byType(Artwork));
-      expect(artwork.uri, poster);
-      expect(artwork.fallbackUri, poster);
-      expect(find.byType(Image), findsOneWidget);
+      final images = tester.widgetList<SharedArtworkImage>(
+        find.byType(SharedArtworkImage),
+      );
+      expect(
+        images.any((image) => image.imageUrl == poster.toString()),
+        isTrue,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -113,20 +117,18 @@ void main() {
       fallbackUri: poster,
     );
     final clip = widget.build(context) as ClipRRect;
-    final image = clip.child! as Image;
+    final image = clip.child! as SharedArtworkImage;
     final fallback =
-        image.errorBuilder!(context, Exception('unavailable'), null) as Image;
+        image.errorWidget!(context, 'unused', Exception('unavailable'))
+            as SharedArtworkImage;
+    expect(fallback.imageUrl, poster.toString());
     expect(
-      ((fallback.image as ResizeImage).imageProvider as NetworkImage).url,
-      poster.toString(),
-    );
-    expect(
-      fallback.errorBuilder!(context, Exception('unavailable'), null),
+      fallback.errorWidget!(context, 'unused', Exception('unavailable')),
       isA<Container>(),
     );
   });
   testWidgets(
-    'a stalled episode thumbnail displays the series poster before any image bytes arrive',
+    'a pending episode thumbnail uses a fixed placeholder without starting a competing poster',
     (tester) async {
       await tester.pumpWidget(
         const MaterialApp(home: Scaffold(body: SizedBox())),
@@ -137,22 +139,12 @@ void main() {
         Uri.parse('http://unreachable.example/episode.jpg'),
         fallbackUri: poster,
       );
-      final primary = (artwork.build(context) as ClipRRect).child! as Image;
-      final loading =
-          primary.frameBuilder!(context, const SizedBox(), null, false)
-              as Image;
+      final primary =
+          (artwork.build(context) as ClipRRect).child! as SharedArtworkImage;
+      expect(primary.placeholder!(context, 'unused'), isA<Container>());
       expect(
-        ((loading.image as ResizeImage).imageProvider as NetworkImage).url,
-        poster.toString(),
-      );
-      expect(
-        loading.frameBuilder!(context, const SizedBox(), null, false),
-        isA<Container>(),
-      );
-      const decodedFrame = SizedBox(key: ValueKey('episode-frame'));
-      expect(
-        primary.frameBuilder!(context, decodedFrame, 0, false),
-        same(decodedFrame),
+        primary.errorWidget!(context, 'unused', Exception()),
+        isA<SharedArtworkImage>(),
       );
     },
   );

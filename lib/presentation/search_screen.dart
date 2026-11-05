@@ -1,3 +1,6 @@
+import '../application/recent_catalog_cache.dart';
+import '../application/browsing_mode.dart';
+import 'lite_media_list.dart';
 import 'package:flutter/material.dart';
 import 'activation_text_field.dart';
 import 'smooth_page_route.dart';
@@ -31,7 +34,9 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
   void initState() {
     super.initState();
     // Load once per search visit, then filter locally without repeated API calls.
-    catalog = widget.initialCatalog ?? widget.provider.getAllItems(widget.type);
+    catalog =
+        widget.initialCatalog ??
+        RecentCatalogCache.loadAll(widget.provider, widget.type);
   }
 
   @override
@@ -41,7 +46,12 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: BrowsingModeSettings.instance,
+    builder: (context, _) => buildSearch(context),
+  );
+
+  Widget buildSearch(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text('Search all ${widget.type.label.toLowerCase()}'),
     ),
@@ -91,6 +101,26 @@ class _CatalogSearchScreenState extends State<CatalogSearchScreen> {
               }).toList();
               if (results.isEmpty) {
                 return const EmptyState('No matching titles found.');
+              }
+              if (BrowsingModeSettings.instance.lite) {
+                return LiteMediaList(
+                  items: results,
+                  onOpen: (item) async {
+                    if (widget.onOpen != null) {
+                      await widget.onOpen!(item);
+                    } else {
+                      if (!context.mounted) return;
+                      await Navigator.of(context).push(
+                        SmoothPageRoute<void>(
+                          builder: (_) => DetailsScreen(
+                            provider: widget.provider,
+                            item: item,
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                );
               }
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

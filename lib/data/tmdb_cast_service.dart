@@ -1,3 +1,5 @@
+import '../application/browsing_mode.dart';
+import 'artwork_repository.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -111,6 +113,7 @@ class TmdbCastService {
   }
 
   Future<List<MovieCredit>> credits(MediaDetails info) {
+    if (BrowsingModeSettings.instance.lite) return Future.value([]);
     if (!enabled) {
       debugPrint(
         'TMDB cast photos unavailable: start with --dart-define-from-file=config.dev.json to include the read token.',
@@ -120,7 +123,13 @@ class TmdbCastService {
     final id = info.item.type == ContentType.series
         ? 'credits:v2:${key(info)}'
         : key(info);
-    if (_cache.containsKey(id)) return Future.value(_cache[id]);
+    if (_cache.containsKey(id)) {
+      ArtworkMetrics.record(
+        'metadata_cache',
+        values: {'role': 'cast', 'source': 'memory'},
+      );
+      return Future.value(_cache[id]);
+    }
     return _pending.putIfAbsent(
       id,
       () => _load(info, id).whenComplete(() {
@@ -210,6 +219,10 @@ class TmdbCastService {
         if (row['key'] == key &&
             DateTime.now().difference(DateTime.parse(row['saved'] as String)) <
                 const Duration(days: 7)) {
+          ArtworkMetrics.record(
+            'metadata_cache',
+            values: {'role': 'cast', 'source': 'disk'},
+          );
           return _cache[key] = (row['credits'] as List)
               .map((c) => MovieCredit.fromJson(c as Map<String, dynamic>))
               .toList();
@@ -293,6 +306,35 @@ class TmdbCastService {
   }
 
   Future<Map<String, dynamic>> request(
+    String path, [
+    Map<String, String> query = const {},
+  ]) async {
+    final watch = Stopwatch()..start();
+    final result = await ArtworkRepository.queue.run<Map<String, dynamic>>(
+      'tmdb-http:${identityHashCode(this)}:${ArtworkMetrics.id('$path:${jsonEncode(query)}')}',
+      () => requestData(path, query),
+      priority: () => path.contains('credits')
+          ? ArtworkPriority.cast
+          : ArtworkPriority.visible,
+      wanted: () => !BrowsingModeSettings.instance.lite,
+    );
+    ArtworkMetrics.record(
+      'metadata_response',
+      values: {
+        'elapsed_ms': watch.elapsedMilliseconds,
+        'category': path.contains('credits')
+            ? 'cast'
+            : path.contains('season')
+            ? 'season'
+            : path.contains('images')
+            ? 'logos'
+            : 'title',
+      },
+    );
+    return result;
+  }
+
+  Future<Map<String, dynamic>> requestData(
     String path, [
     Map<String, String> query = const {},
   ]) async {

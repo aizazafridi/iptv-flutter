@@ -35,6 +35,8 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
   int current = 0;
   int navigation = 0;
   bool navigated = false;
+  double? scrollingTo;
+  int scrollGeneration = 0;
   @override
   void initState() {
     super.initState();
@@ -46,6 +48,7 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.contentKey != widget.contentKey) {
       navigated = false;
+      scrollingTo = null;
       current = widget.initialIndex;
       if (controller.hasClients) controller.jumpTo(0);
     } else if (!navigated && oldWidget.initialIndex != widget.initialIndex) {
@@ -69,8 +72,8 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
             unawaited(
               vertical.position.ensureVisible(
                 target,
-                duration: const Duration(milliseconds: 170),
-                curve: Curves.easeOut,
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutCubic,
                 alignment: .25,
               ),
             );
@@ -81,23 +84,32 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
     return result;
   });
   Future<void> alignHorizontal(int index) async {
-    if (!controller.hasClients) return;
+    if (!controller.hasClients || widget.count == 0) return;
     final slots = (controller.position.viewportDimension / widget.width)
         .floor()
         .clamp(1, widget.count);
-    var first = (controller.offset / widget.width).floor();
+    var first = ((scrollingTo ?? controller.offset) / widget.width).round();
     if (index < first) first = index;
     if (index >= first + slots) first = index - slots + 1;
     final offset = (first * widget.width).clamp(
       0.0,
       controller.position.maxScrollExtent,
     );
+    if (scrollingTo != null && (scrollingTo! - offset).abs() < .5) return;
     if ((controller.offset - offset).abs() > .5) {
-      await controller.animateTo(
-        offset,
-        duration: const Duration(milliseconds: 170),
-        curve: Curves.easeOut,
-      );
+      scrollingTo = offset;
+      final scrollTicket = ++scrollGeneration;
+      try {
+        await controller.animateTo(
+          offset,
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      } finally {
+        if (scrollTicket == scrollGeneration) scrollingTo = null;
+      }
     }
   }
 
@@ -108,6 +120,13 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
     navigated = true;
     current = index.clamp(0, widget.count - 1);
     final target = current;
+    // Focus mounted neighbours immediately: the outgoing and incoming cards
+    // animate together while the row moves, instead of waiting for scrolling.
+    if (nodes[target]?.context != null &&
+        nodes.values.any((node) => node.hasFocus)) {
+      node(target).requestFocus();
+      return;
+    }
     await alignHorizontal(target);
     if (!mounted || ticket != navigation) return;
     // Lazy ListView children are attached after scrolling lays out the target.

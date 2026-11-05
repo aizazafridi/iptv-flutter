@@ -1,3 +1,5 @@
+import 'artwork_repository.dart';
+import '../application/browsing_mode.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../domain/models.dart';
@@ -15,7 +17,11 @@ class TmdbArtworkService {
   TmdbArtworkService({required this.client, this.persist = true});
   final _seasonStills = <String, Future<Map<int, Uri>>>{};
   Future<Uri?> episodeStill(MediaDetails info, Episode episode) async {
-    if (!client.enabled || info.item.type != ContentType.series) return null;
+    if (BrowsingModeSettings.instance.lite ||
+        !client.enabled ||
+        info.item.type != ContentType.series) {
+      return null;
+    }
     final key = 'season-stills:v1:${client.key(info)}:${episode.season}';
     final stills = await _seasonStills.putIfAbsent(
       key,
@@ -82,7 +88,9 @@ class TmdbArtworkService {
   }
 
   Future<Uri?> titleLogo(MediaDetails info) {
-    if (!client.enabled) return Future.value(null);
+    if (BrowsingModeSettings.instance.lite || !client.enabled) {
+      return Future.value(null);
+    }
     final key = 'logo:v1:${client.key(info)}';
     if (_cache.containsKey(key)) return Future.value(_cache[key]);
     return _pending.putIfAbsent(
@@ -174,7 +182,9 @@ class TmdbArtworkService {
   Future<Uri?> detailsPoster(MediaDetails info) =>
       _detailsArtwork(info, 'poster_path');
   Future<Uri?> _detailsArtwork(MediaDetails info, String field) {
-    if (!client.enabled) return Future.value(null);
+    if (BrowsingModeSettings.instance.lite || !client.enabled) {
+      return Future.value(null);
+    }
     final key = 'details-$field:v1:${client.key(info)}';
     if (_cache.containsKey(key)) return Future.value(_cache[key]);
     return _pending.putIfAbsent(
@@ -206,8 +216,28 @@ class TmdbArtworkService {
     }
   }
 
-  Future<Uri?> backdrop(ContentItem item) => _catalogArtwork(item, false);
-  Future<Uri?> poster(ContentItem item) => _catalogArtwork(item, true);
+  Future<Uri?> measureLookup(
+    String role,
+    Future<Uri?> Function() lookup,
+  ) async {
+    final watch = Stopwatch()..start();
+    final uri = await lookup();
+    ArtworkMetrics.record(
+      'artwork_metadata_ready',
+      url: uri?.toString(),
+      values: {
+        'role': role,
+        'elapsed_ms': watch.elapsedMilliseconds,
+        'found': uri != null,
+      },
+    );
+    return uri;
+  }
+
+  Future<Uri?> backdrop(ContentItem item) =>
+      measureLookup('backdrop', () => _catalogArtwork(item, false));
+  Future<Uri?> poster(ContentItem item) =>
+      measureLookup('poster', () => _catalogArtwork(item, true));
 
   /// Reads known artwork URLs without starting a TMDB network search.
   Future<Uri?> cachedPoster(ContentItem item) =>
@@ -218,7 +248,9 @@ class TmdbArtworkService {
     bool poster, {
     bool cacheOnly = false,
   }) {
-    if (!client.enabled || item.type == ContentType.live) {
+    if (BrowsingModeSettings.instance.lite ||
+        !client.enabled ||
+        item.type == ContentType.live) {
       return Future.value(null);
     }
     final title = item.type == ContentType.series

@@ -169,7 +169,7 @@ class _LiveTvControlsState extends State<LiveTvControls> {
   }) {
     final label = switch (title) {
       'Search channels' => 'Search',
-      'Split screen' => 'Multiview',
+      'Multi View' => 'Multi View',
       'Mute' || 'Unmute' => 'Audio',
       'Add to My list' || 'Remove from My list' => 'My List',
       _ => title,
@@ -454,7 +454,7 @@ class _LiveTvControlsState extends State<LiveTvControls> {
                     widget.onRecord,
                   ),
                   action(
-                    'Split screen',
+                    'Multi View',
                     const Icon(Icons.grid_view_rounded),
                     widget.onSplit,
                   ),

@@ -38,7 +38,7 @@ class VodPlayerControls extends StatelessWidget {
     required this.onSeekEnd,
   });
   static double overlayHeightFor(double viewportHeight) =>
-      (viewportHeight * .28).clamp(214.0, 310.0);
+      (viewportHeight * .25).clamp(190.0, 244.0);
   static String displayTitle(String title, String metadata) => title
       .replaceAllMapped(
         RegExp(r'\s*\(((?:19|20)\d{2})\)'),
@@ -46,8 +46,8 @@ class VodPlayerControls extends StatelessWidget {
       )
       .trim();
   double get controlsWidth =>
-      50 +
-      80 *
+      42 +
+      64 *
           (4 +
               (onPrevious == null ? 0 : 1) +
               (onNext == null ? 0 : 1) +
@@ -123,7 +123,7 @@ class VodPlayerControls extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'Roboto',
-                      fontSize: 27,
+                      fontSize: 22,
                       fontWeight: FontWeight.w500,
                       color: Colors.white,
                     ),
@@ -137,7 +137,7 @@ class VodPlayerControls extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: 'Roboto',
-                          fontSize: 15,
+                          fontSize: 12.5,
                           color: Color(0xffb4becc),
                         ),
                       ),
@@ -181,14 +181,14 @@ class VodPlayerControls extends StatelessWidget {
                       Text(
                         positionLabel,
                         style: const TextStyle(
-                          fontSize: 15,
+                          fontSize: 12.5,
                           color: Color(0xffb4becc),
                         ),
                       ),
                       Text(
                         durationLabel,
                         style: const TextStyle(
-                          fontSize: 15,
+                          fontSize: 12.5,
                           color: Color(0xffb4becc),
                         ),
                       ),
@@ -297,8 +297,8 @@ class _VodActionState extends State<_VodAction> {
     final enabled = widget.callback != null;
     final focused = node.hasFocus;
     return SizedBox(
-      width: widget.primary ? 50 : 80,
-      height: 70,
+      width: widget.primary ? 42 : 64,
+      height: 62,
       child: Semantics(
         label: widget.label,
         button: true,
@@ -339,8 +339,8 @@ class _VodActionState extends State<_VodAction> {
                   key: widget.primary ? const ValueKey('vod-play-pause') : null,
                   duration: const Duration(milliseconds: 160),
                   curve: Curves.easeOut,
-                  width: widget.primary ? 50 : 76,
-                  height: widget.primary ? 50 : 40,
+                  width: widget.primary ? 42 : 60,
+                  height: widget.primary ? 42 : 34,
                   decoration: BoxDecoration(
                     color: focused
                         ? const Color(0xfff0f4f8)
@@ -362,7 +362,7 @@ class _VodActionState extends State<_VodAction> {
                   ),
                   child: Icon(
                     widget.icon,
-                    size: widget.primary ? 28 : 23,
+                    size: widget.primary ? 24 : 20,
                     color: !enabled
                         ? Colors.white30
                         : focused
@@ -384,7 +384,7 @@ class _VodActionState extends State<_VodAction> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'Roboto',
-                      fontSize: 13.5,
+                      fontSize: 11.5,
                       height: 1.0,
                       color: Colors.white,
                     ),

@@ -11,10 +11,12 @@ import 'widgets.dart';
 class CategoryLockSettingsScreen extends StatefulWidget {
   final IptvProvider provider;
   final ContentType type;
+  final bool recordingsOnly;
   const CategoryLockSettingsScreen({
     super.key,
     required this.provider,
     this.type = ContentType.live,
+    this.recordingsOnly = false,
   });
   @override
   State<CategoryLockSettingsScreen> createState() =>
@@ -32,10 +34,10 @@ class _CategoryLockSettingsScreenState
   String filter = 'All';
   Future<List<Category>> load() async {
     await locks.load();
-    return [
-      CategoryLocks.recordingsCategory(widget.type),
-      ...await raw.getCategories(widget.type),
-    ];
+    if (widget.recordingsOnly) {
+      return [CategoryLocks.recordingsCategory(ContentType.live)];
+    }
+    return raw.getCategories(widget.type);
   }
 
   Future<void> change(
@@ -75,7 +77,9 @@ class _CategoryLockSettingsScreenState
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(
-        '${widget.type.label}: category PIN protection',
+        widget.recordingsOnly
+            ? 'Recordings: hide and PIN protection'
+            : '${widget.type.label}: category PIN protection',
         style: const TextStyle(fontSize: 18),
       ),
     ),

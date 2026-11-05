@@ -13,6 +13,7 @@ class ChannelPicker extends StatefulWidget {
   final bool embedded;
   final VoidCallback? onClose;
   final String? currentId, categoryId;
+  final LiveChannelBrowserSelection? browserSelection;
   final IptvProvider? provider;
   final Future<bool> Function(ContentItem)? onSelect;
   final Future<List<ContentItem>> Function() load;
@@ -26,6 +27,7 @@ class ChannelPicker extends StatefulWidget {
     this.onClose,
     this.currentId,
     this.categoryId,
+    this.browserSelection,
     this.provider,
     this.onSelect,
   });
@@ -185,6 +187,7 @@ class _ChannelPickerState extends State<ChannelPicker> {
         provider: widget.provider,
         currentId: widget.currentId,
         categoryId: widget.categoryId,
+        selection: widget.browserSelection,
         onSelect: widget.onSelect,
       );
     }

@@ -1,6 +1,6 @@
+import 'widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../domain/models.dart';
 import '../application/watch_history.dart';
 
@@ -8,10 +8,12 @@ class PlayerEpisodeDrawer extends StatefulWidget {
   final List<Episode> episodes;
   final Episode? current;
   final List<WatchEntry> history;
+  final Uri? fallbackArtwork;
   const PlayerEpisodeDrawer({
     super.key,
     required this.episodes,
     this.current,
+    this.fallbackArtwork,
     this.history = const [],
   });
   @override
@@ -201,15 +203,12 @@ class _PlayerEpisodeDrawerState extends State<PlayerEpisodeDrawer> {
                         SizedBox(
                           width: 80,
                           height: 48,
-                          child: episode.artwork == null
-                              ? const Icon(Icons.tv)
-                              : CachedNetworkImage(
-                                  imageUrl: episode.artwork.toString(),
-                                  fit: BoxFit.cover,
-                                  memCacheWidth: 240,
-                                  errorWidget: (_, _, _) =>
-                                      const Icon(Icons.tv),
-                                ),
+                          child: Artwork(
+                            episode.artwork ?? widget.fallbackArtwork,
+                            width: 80,
+                            height: 48,
+                            fallbackUri: widget.fallbackArtwork,
+                          ),
                         ),
                         const SizedBox(width: 10),
                         Expanded(

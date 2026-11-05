@@ -1,7 +1,12 @@
-import 'artwork_prefetch.dart';
+import 'artwork_retry.dart';
+import '../data/locked_provider.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
+import 'history_removal.dart';
+import '../application/browsing_mode.dart';
+import 'lite_media_list.dart';
 import 'catalog_categories_drawer.dart';
 import 'dart:async';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
@@ -54,6 +59,10 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   int savedRevision = 0;
   late final locks = CategoryLocks.forProvider(widget.provider);
   final page = ScrollController();
+  final gridScroll = ScrollController();
+  final gridSelected = FocusNode(debugLabel: 'catalog restored title');
+  bool restoreGridSelection = false, restoreLiteSelection = false;
+  String? restoredGridTitle;
   final gridQueryController = TextEditingController();
   final categoriesFocus = FocusNode(debugLabel: 'catalog categories');
   final searchFocus = FocusNode(debugLabel: 'series catalog search');
@@ -77,6 +86,9 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   Timer? featuredTimer;
   bool loading = true, failed = false, grid = false;
   String? filter;
+  String liteSection = 'all';
+  String? selectedTitle;
+  Timer? liteSearchDelay;
   String query = '', sort = 'provider';
   Future<List<ContentItem>>? gridItems;
   int generation = 0;
@@ -88,13 +100,22 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   @override
   void initState() {
     super.initState();
+    ArtworkMetrics.record('catalog_open', values: {'type': widget.type.name});
+    BrowsingModeSettings.instance.addListener(modeChanged);
     history.addListener(historyChanged);
     myList.addListener(myListChanged);
     locks.addListener(restrictionsChanged);
     unawaited(load());
+    startFeaturedRotation();
+  }
+
+  void startFeaturedRotation() {
+    featuredTimer?.cancel();
+    if (BrowsingModeSettings.instance.lite) return;
     featuredTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted ||
           loading ||
+          BrowsingModeSettings.instance.lite ||
           grid ||
           watching.length < 2 ||
           !TickerMode.valuesOf(context).enabled ||
@@ -110,11 +131,14 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
 
   @override
   void dispose() {
+    liteSearchDelay?.cancel();
+    BrowsingModeSettings.instance.removeListener(modeChanged);
     featuredTimer?.cancel();
     history.removeListener(historyChanged);
     myList.removeListener(myListChanged);
     locks.removeListener(restrictionsChanged);
     page.dispose();
+    gridScroll.dispose();
     gridQueryController.dispose();
     for (final node in [
       categoriesFocus,
@@ -125,6 +149,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       gridSort,
       gridCatalog,
       gridFirst,
+      gridSelected,
       footerFocus,
     ]) {
       node.dispose();
@@ -133,7 +158,10 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   }
 
   Future<List<ContentItem>> allowed(List<ContentItem> rows) async {
-    final visible = await locks.visibleItems(rows);
+    final provider = widget.provider;
+    final visible = provider is LockedProvider
+        ? await provider.visibleSavedItems(rows, excludeConfiguredLocks: true)
+        : await locks.visibleItems(rows, excludeConfiguredLocks: true);
     final seen = <String>{};
     return visible
         .where(
@@ -157,6 +185,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
         }
       });
   Future<void> load() async {
+    final clock = Stopwatch()..start();
     final version = ++generation;
     setState(() {
       loading = true;
@@ -183,7 +212,10 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
           /* Fall back to category data. */
         }
       }
-      if (initial.isEmpty) {
+      if (initial.isEmpty && BrowsingModeSettings.instance.lite) {
+        initial = await allItems();
+      }
+      if (initial.isEmpty && !BrowsingModeSettings.instance.lite) {
         for (final category in available) {
           initial = await loadCategory(category);
           if (initial.isNotEmpty) break;
@@ -217,6 +249,24 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
             recentItems.firstOrNull ??
             initial.firstOrNull;
         loading = false;
+      });
+      ArtworkMetrics.record(
+        'catalog_metadata_ready',
+        values: {
+          'type': widget.type.name,
+          'elapsed_ms': clock.elapsedMilliseconds,
+        },
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ArtworkMetrics.record(
+            'catalog_usable_frame',
+            values: {
+              'type': widget.type.name,
+              'elapsed_ms': clock.elapsedMilliseconds,
+            },
+          );
+        }
       });
       if (focusOnReady) {
         focusOnReady = false;
@@ -284,7 +334,29 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     unawaited(load());
   }
 
+  void modeChanged() {
+    if (!mounted) return;
+    startFeaturedRotation();
+    restoreLiteSelection = BrowsingModeSettings.instance.lite;
+    if (!BrowsingModeSettings.instance.lite && selectedTitle != null) {
+      grid = true;
+      gridItems = filter == null
+          ? allItems()
+          : loadCategory(categories.firstWhere((c) => c.id == filter));
+      restoredGridTitle = selectedTitle;
+      restoreGridSelection = true;
+    }
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) focusEntry();
+    });
+  }
+
   void focusEntry() {
+    if (BrowsingModeSettings.instance.lite) {
+      gridSearch.requestFocus();
+      return;
+    }
     if (loading) {
       focusOnReady = true;
       return;
@@ -294,8 +366,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
         page
             .animateTo(
               0,
-              duration: const Duration(milliseconds: 210),
-              curve: Curves.easeOut,
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
             )
             .then((_) async {
               await WidgetsBinding.instance.endOfFrame;
@@ -352,6 +424,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     WatchEntry? resume,
     bool watch = false,
   }) async {
+    selectedTitle = item.id;
     if (!await requestTitleAccess(context, widget.provider, item) || !mounted) {
       return;
     }
@@ -375,7 +448,9 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   Future<List<ContentItem>> allItems() =>
       categoryData.putIfAbsent('__all__', () async {
         try {
-          return await allowed(await widget.provider.getAllItems(widget.type));
+          return await allowed(
+            await RecentCatalogCache.loadAll(widget.provider, widget.type),
+          );
         } catch (_) {
           categoryData.remove('__all__');
           rethrow;
@@ -493,8 +568,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       if (page.hasClients) {
         await page.animateTo(
           page.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 210),
-          curve: Curves.easeOut,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
         );
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -515,8 +590,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
                       (sum, section) => sum + _extentFor(section),
                     ))
             .clamp(0, page.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 210),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
       );
     }
     await WidgetsBinding.instance.endOfFrame;
@@ -589,11 +664,12 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   );
   @override
   Widget build(BuildContext context) {
+    if (BrowsingModeSettings.instance.lite) return liteCatalog();
     final size = MediaQuery.sizeOf(context);
     final scale = (size.width / 1920).clamp(.65, 1.1);
-    final width = (180 * scale).clamp(130.0, 198.0);
+    final width = (220 * scale).clamp(150.0, 242.0);
     posterWidth = width;
-    rowExtent = width * 1.5 + 130;
+    rowExtent = width * 1.3 + 130;
     heroExtent = (size.height * .42).clamp(250.0, 460.0);
     final rows = _sections;
     return ColoredBox(
@@ -716,10 +792,11 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
                         provider: widget.provider,
                         watching: watching,
                         onOpen: (item) => open(item),
+                        onFocus: (item) => selectedTitle = item.id,
                         onResume: (entry) =>
                             open(entry.item, watch: true, resume: entry),
                         onMove: (direction, current) =>
-                            unawaited(focusRow(row + direction, current)),
+                            unawaited(focusRow(row + direction)),
                         onNavigation: widget.onNavigation,
                         onEmpty: () {
                           if (mounted) {
@@ -734,6 +811,171 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       ),
     );
   }
+
+  Widget liteCatalog() => ColoredBox(
+    color: const Color(0xff0d121b),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '$catalogName \u00b7 LITE',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              ...widget.headerActions,
+              if (widget.headerActions.isEmpty)
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: widget.onSettings,
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+            ],
+          ),
+          gridControls(),
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton.icon(
+                focusNode: categoriesFocus,
+                onPressed: chooseCategory,
+                icon: const Icon(Icons.filter_list, size: 18),
+                label: Text('Categories: $selectedCategoryName'),
+              ),
+              for (final entry in {
+                'all': 'All $catalogName',
+                'continue': 'Continue Watching',
+                'list': 'My List',
+              }.entries)
+                ChoiceChip(
+                  label: Text(entry.value),
+                  selected: liteSection == entry.key,
+                  onSelected: (_) => setState(() => liteSection = entry.key),
+                ),
+            ],
+          ),
+          Expanded(
+            child: FutureBuilder<List<ContentItem>>(
+              future: filter == null
+                  ? allItems()
+                  : loadCategory(categories.firstWhere((c) => c.id == filter)),
+              builder: (context, snapshot) {
+                if (snapshot.hasError || failed) {
+                  return Center(
+                    child: TextButton(
+                      onPressed: () {
+                        RecentCatalogCache.invalidate(widget.provider);
+                        categoryData.clear();
+                        unawaited(load());
+                        setState(() {});
+                      },
+                      child: Text('Unable to load $catalogLower. Retry'),
+                    ),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  );
+                }
+                var items = snapshot.data!;
+                final source = liteSection == 'continue'
+                    ? watching.map((e) => e.item).toList()
+                    : liteSection == 'list'
+                    ? savedTitles
+                    : items;
+                final allowedIds = items.map((item) => item.id).toSet();
+                final terms = query.trim().toLowerCase().split(RegExp(r'\s+'));
+                items = source
+                    .where(
+                      (item) =>
+                          allowedIds.contains(item.id) &&
+                          terms.every(item.name.toLowerCase().contains),
+                    )
+                    .toList();
+                switch (sort) {
+                  case 'az':
+                    items.sort(
+                      (a, b) =>
+                          a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+                    );
+                  case 'za':
+                    items.sort(
+                      (a, b) =>
+                          b.name.toLowerCase().compareTo(a.name.toLowerCase()),
+                    );
+                  case 'date':
+                    items.sort(
+                      (a, b) => (b.addedAt ?? DateTime(1970)).compareTo(
+                        a.addedAt ?? DateTime(1970),
+                      ),
+                    );
+                  case 'year':
+                    items.sort(
+                      (a, b) =>
+                          (b.releaseYear ?? 0).compareTo(a.releaseYear ?? 0),
+                    );
+                  case 'rating':
+                    items.sort(
+                      (a, b) => (b.rating ?? -1).compareTo(a.rating ?? -1),
+                    );
+                }
+                if (items.isEmpty) {
+                  return const Center(child: Text('No matching titles.'));
+                }
+                final restore = restoreLiteSelection;
+                restoreLiteSelection = false;
+                return LiteMediaList(
+                  onRemove: liteSection == 'continue'
+                      ? (item) => confirmHistoryRemoval(context, history, item)
+                      : null,
+                  restoreFocus: restore,
+                  key: ValueKey((filter, query, sort, liteSection)),
+                  items: items,
+                  selectedId: selectedTitle,
+                  entryFocus: gridFirst,
+                  up: gridSearch.requestFocus,
+                  left: widget.onNavigation,
+                  onFocus: (id) => selectedTitle = id,
+                  onOpen: (item) => open(
+                    item,
+                    watch: liteSection == 'continue',
+                    resume: watching
+                        .where((e) => e.item.id == item.id)
+                        .firstOrNull,
+                  ),
+                  subtitle: (item) {
+                    final entry = watching
+                        .where((e) => e.item.id == item.id)
+                        .firstOrNull;
+                    return entry == null
+                        ? item.releaseYear?.toString() ?? ''
+                        : '${entry.item.type != ContentType.series || entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}${((entry.duration - entry.position).inSeconds / 60).ceil().clamp(0, 99999)} min left';
+                  },
+                  progress: (item) {
+                    final entry = watching
+                        .where((e) => e.item.id == item.id)
+                        .firstOrNull;
+                    return entry == null || entry.duration <= Duration.zero
+                        ? null
+                        : entry.position.inMilliseconds /
+                              entry.duration.inMilliseconds;
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget gridControls() => Row(
     children: [
@@ -759,7 +1001,16 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
                   ? 'Search all $catalogLower'
                   : 'Search $selectedCategoryName',
             ),
-            onChanged: (value) => setState(() => query = value.toLowerCase()),
+            onChanged: (value) {
+              if (!BrowsingModeSettings.instance.lite) {
+                setState(() => query = value.toLowerCase());
+                return;
+              }
+              liteSearchDelay?.cancel();
+              liteSearchDelay = Timer(const Duration(milliseconds: 200), () {
+                if (mounted) setState(() => query = value.toLowerCase());
+              });
+            },
           ),
         ),
       ),
@@ -825,7 +1076,9 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
         },
         child: TextButton(
           focusNode: gridCatalog,
-          onPressed: handleBack,
+          onPressed: BrowsingModeSettings.instance.lite
+              ? widget.onNavigation
+              : handleBack,
           child: const Text('Catalog'),
         ),
       ),
@@ -879,12 +1132,38 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final columns = constraints.maxWidth < 850 ? 5 : 6;
+          final selectedIndex = rows.indexWhere(
+            (item) => item.id == restoredGridTitle,
+          );
+          if (restoreGridSelection && selectedIndex >= 0) {
+            restoreGridSelection = false;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted || !gridScroll.hasClients) return;
+              final tileWidth =
+                  (constraints.maxWidth - 12 - (columns - 1) * 18) / columns;
+              gridScroll.jumpTo(
+                ((selectedIndex ~/ columns) * (tileWidth / .63 + 18)).clamp(
+                  0,
+                  gridScroll.position.maxScrollExtent,
+                ),
+              );
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+                  (selectedIndex == 0 ? gridFirst : gridSelected)
+                      .requestFocus();
+                }
+              });
+              WidgetsBinding.instance.scheduleFrame();
+            });
+          }
+
           return GridView.builder(
+            controller: gridScroll,
             key: ValueKey((filter, query, sort)),
             padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 6),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: columns,
-              childAspectRatio: .56,
+              childAspectRatio: .63,
               crossAxisSpacing: 18,
               mainAxisSpacing: 18,
             ),
@@ -909,7 +1188,12 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
               child: SeriesPosterCard(
                 item: rows[index],
                 provider: widget.provider,
-                focusNode: index == 0 ? gridFirst : null,
+                focusNode: index == 0
+                    ? gridFirst
+                    : index == selectedIndex
+                    ? gridSelected
+                    : null,
+                onFocus: () => selectedTitle = rows[index].id,
                 onOpen: () => open(rows[index]),
               ),
             ),
@@ -933,6 +1217,7 @@ class _CatalogSection extends StatefulWidget {
   final IptvProvider provider;
   final List<WatchEntry> watching;
   final void Function(ContentItem) onOpen;
+  final ValueChanged<ContentItem>? onFocus;
   final void Function(WatchEntry) onResume;
   final void Function(int, int) onMove;
   final VoidCallback onNavigation, onEmpty;
@@ -945,6 +1230,7 @@ class _CatalogSection extends StatefulWidget {
     required this.watching,
     required this.onOpen,
     required this.onResume,
+    this.onFocus,
     required this.onMove,
     required this.onNavigation,
     required this.onEmpty,
@@ -963,9 +1249,7 @@ class _CatalogSectionState extends State<_CatalogSection>
   Future<List<ContentItem>> load() async {
     final rows = await widget.section.load();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        ArtworkPrefetch.images(context, rows.map((item) => item.artwork));
-      }
+      if (mounted) {}
     });
     if (rows.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -988,13 +1272,11 @@ class _CatalogSectionState extends State<_CatalogSection>
     if (!mounted) return;
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
-    if (visited) {
-      rail.currentState?.focusCurrent();
-    } else {
+    if (!visited) {
       visited = true;
       updateKeepAlive();
-      await rail.currentState?.focusAt(preferred);
     }
+    await rail.currentState?.focusAt(preferred);
   }
 
   @override
@@ -1029,7 +1311,7 @@ class _CatalogSectionState extends State<_CatalogSection>
               return MediaHorizontalRail(
                 key: rail,
                 count: rows.length,
-                width: widget.width + 18,
+                width: widget.width * 1.22 + 18,
                 height: widget.height - 54,
                 up: () => widget.onMove(-1, rail.currentState?.current ?? 0),
                 down: () => widget.onMove(1, rail.currentState?.current ?? 0),
@@ -1045,10 +1327,18 @@ class _CatalogSectionState extends State<_CatalogSection>
                       item: item,
                       provider: widget.provider,
                       focusNode: node,
+                      onFocus: () => widget.onFocus?.call(item),
                       progress: widget.section.landscape ? entry : null,
                       onOpen: () => widget.section.landscape && entry != null
                           ? widget.onResume(entry)
                           : widget.onOpen(item),
+                      onRemove: widget.section.landscape
+                          ? () => confirmHistoryRemoval(
+                              context,
+                              WatchHistory.forProvider(widget.provider),
+                              item,
+                            )
+                          : null,
                       onDetails: () => widget.onOpen(item),
                     ),
                   );
@@ -1069,7 +1359,7 @@ class SeriesPosterCard extends StatelessWidget {
   final FocusNode? focusNode;
   final WatchEntry? progress;
   final VoidCallback onOpen;
-  final VoidCallback? onDetails;
+  final VoidCallback? onDetails, onFocus, onRemove;
   const SeriesPosterCard({
     super.key,
     required this.item,
@@ -1078,9 +1368,18 @@ class SeriesPosterCard extends StatelessWidget {
     this.progress,
     required this.onOpen,
     this.onDetails,
+    this.onRemove,
+    this.onFocus,
   });
   @override
-  Widget build(BuildContext context) => Focus(
+  Widget build(BuildContext context) => onRemove == null
+      ? card(context)
+      : HistoryRemoteAction(
+          onOpen: onOpen,
+          onRemove: onRemove!,
+          child: card(context),
+        );
+  Widget card(BuildContext context) => Focus(
     canRequestFocus: false,
     onKeyEvent: (_, event) {
       if (event is KeyDownEvent &&
@@ -1093,22 +1392,34 @@ class SeriesPosterCard extends StatelessWidget {
     },
     child: TextButton(
       focusNode: focusNode,
+      onFocusChange: (focused) {
+        if (focused) onFocus?.call();
+      },
       onPressed: onOpen,
-      onLongPress: onDetails,
+      onLongPress: onRemove ?? onDetails,
       style: TextButton.styleFrom(
         padding: EdgeInsets.zero,
         foregroundColor: Colors.white,
       ),
-      child: Builder(
-        builder: (context) {
+      child: LayoutBuilder(
+        builder: (context, constraints) {
           final focused = Focus.of(context).hasFocus;
-          return AnimatedScale(
-            scale: focused ? 1.04 : 1,
-            duration: const Duration(milliseconds: 170),
-            curve: Curves.easeOut,
+          return TweenAnimationBuilder<double>(
+            tween: Tween(begin: 1, end: focused ? 1.22 : 1),
+            builder: (_, factor, child) => OverflowBox(
+              minWidth: 0,
+              maxWidth: double.infinity,
+              child: SizedBox(
+                width: constraints.maxWidth / 1.22 * factor,
+                height: constraints.maxHeight,
+                child: child,
+              ),
+            ),
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeOutCubic,
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 170),
-              curve: Curves.easeOut,
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOutCubic,
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
                 color: focused ? const Color(0xff25364a) : Colors.transparent,
@@ -1158,7 +1469,7 @@ class SeriesPosterCard extends StatelessWidget {
                   ),
                   if (progress != null)
                     Text(
-                      'Resume \u00b7 S${progress!.episode?.season ?? 1} E${progress!.episode?.number ?? 1} \u00b7 ${((progress!.duration - progress!.position).inSeconds / 60).ceil()} min left',
+                      'Resume \u00b7 ${item.type == ContentType.series && progress!.episode != null ? 'S${progress!.episode!.season} E${progress!.episode!.number} \u00b7 ' : ''}${((progress!.duration - progress!.position).inSeconds / 60).ceil()} min left',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -1210,11 +1521,47 @@ class _FeaturedHero extends StatefulWidget {
 }
 
 class _FeaturedHeroState extends State<_FeaturedHero> {
+  Uri? arrivingLogo, arrivingBackdrop;
+  Future<Uri?>? brokenBackdrop;
+  ArtworkRetryScope artworkRetries = ArtworkRetryScope();
+  @override
+  void dispose() {
+    artworkRetries.dispose();
+    super.dispose();
+  }
+
   late Future<(Uri?, Uri?)> artwork = loadArtwork();
   @override
   void didUpdateWidget(covariant _FeaturedHero oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.item.id != widget.item.id) artwork = loadArtwork();
+    if (oldWidget.item.id != widget.item.id) {
+      artworkRetries.dispose();
+      artworkRetries = ArtworkRetryScope();
+      brokenBackdrop = null;
+      arrivingLogo = null;
+      arrivingBackdrop = null;
+      artwork = loadArtwork();
+    }
+  }
+
+  Widget recoverBackdrop(MediaDetails? info) {
+    if (info == null) return const SizedBox();
+    return FutureBuilder<Uri?>(
+      future: brokenBackdrop ??= retryArtwork<Uri?>(
+        scope: artworkRetries,
+        load: () => TmdbArtworkService.configured.detailsBackdrop(info),
+        usable: (value) => value != null,
+        active: () => mounted && widget.item.id == info.item.id,
+      ),
+      builder: (context, snapshot) => snapshot.data == null
+          ? const SizedBox()
+          : SharedArtworkImage(
+              kind: ArtworkKind.backdrop,
+              imageUrl: snapshot.data.toString(),
+              fit: BoxFit.cover,
+              alignment: Alignment.centerRight,
+            ),
+    );
   }
 
   Future<(Uri?, Uri?)> loadArtwork() async {
@@ -1222,10 +1569,31 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
       final info = (await widget.details).details;
       final service = TmdbArtworkService.configured;
       final result = await Future.wait([
-        service.titleLogo(info),
-        info.backdrop == null
-            ? service.detailsBackdrop(info)
-            : Future.value(info.backdrop),
+        retryArtwork<Uri?>(
+          scope: artworkRetries,
+          load: () => service.titleLogo(info),
+          usable: (value) => value != null,
+          active: () => mounted && widget.item.id == info.item.id,
+        ).then((uri) {
+          if (mounted && widget.item.id == info.item.id) {
+            setState(() => arrivingLogo = uri);
+          }
+          return uri;
+        }),
+        (info.backdrop == null
+                ? retryArtwork<Uri?>(
+                    scope: artworkRetries,
+                    load: () => service.detailsBackdrop(info),
+                    usable: (value) => value != null,
+                    active: () => mounted && widget.item.id == info.item.id,
+                  )
+                : Future.value(info.backdrop))
+            .then((uri) {
+              if (mounted && widget.item.id == info.item.id) {
+                setState(() => arrivingBackdrop = uri);
+              }
+              return uri;
+            }),
       ]);
       return (result[0], result[1]);
     } catch (_) {
@@ -1245,18 +1613,19 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
           return FutureBuilder<(Uri?, Uri?)>(
             future: artwork,
             builder: (context, images) {
-              final backdrop = images.data?.$2 ?? info?.backdrop;
+              final backdrop =
+                  images.data?.$2 ?? arrivingBackdrop ?? info?.backdrop;
               return Stack(
                 fit: StackFit.expand,
                 children: [
                   const ColoredBox(color: Color(0xff151d28)),
                   if (backdrop != null)
-                    CachedNetworkImage(
+                    SharedArtworkImage(
+                      kind: ArtworkKind.backdrop,
                       imageUrl: backdrop.toString(),
                       fit: BoxFit.cover,
                       alignment: Alignment.centerRight,
-                      memCacheWidth: 1280,
-                      errorWidget: (_, _, _) => const SizedBox(),
+                      errorWidget: (_, _, _) => recoverBackdrop(info),
                     ),
                   const DecoratedBox(
                     decoration: BoxDecoration(
@@ -1281,9 +1650,11 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (images.data?.$1 != null)
-                                CachedNetworkImage(
-                                  imageUrl: images.data!.$1.toString(),
+                              if ((images.data?.$1 ?? arrivingLogo) != null)
+                                SharedArtworkImage(
+                                  imageUrl: (images.data?.$1 ?? arrivingLogo)
+                                      .toString(),
+                                  kind: ArtworkKind.logo,
                                   height: 54 * widget.scale,
                                   width: 300 * widget.scale,
                                   alignment: Alignment.centerLeft,
@@ -1394,7 +1765,9 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
                                 label: Text(
                                   widget.resume == null
                                       ? 'Watch Now'
-                                      : widget.resume!.episode == null
+                                      : widget.item.type !=
+                                                ContentType.series ||
+                                            widget.resume!.episode == null
                                       ? 'Resume'
                                       : 'Resume S${widget.resume!.episode!.season} E${widget.resume!.episode!.number}',
                                 ),

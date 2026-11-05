@@ -15,6 +15,68 @@ import 'profiles_locks_test.dart' show CatalogFixture, registry, config;
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+  test(
+    'history excludes hidden and configured locks across content types even after unlock',
+    () async {
+      for (final type in ContentType.values) {
+        final locks = CategoryLocks('history-${type.name}');
+        await locks.setPassword('123456');
+        final item = ContentItem(
+          id: '42',
+          name: 'Title',
+          type: type,
+          categoryId: '7',
+        );
+        final category = Category('7', '', type);
+        expect(await locks.visibleItems([item], excludeConfiguredLocks: true), [
+          item,
+        ]);
+        await locks.setTitleLocked(item, true);
+        locks.unlockTitle(item, '123456');
+        expect(
+          await locks.visibleItems([item], excludeConfiguredLocks: true),
+          isEmpty,
+        );
+        await locks.setTitleLocked(item, false, password: '123456');
+        await locks.setLocked(category, true);
+        locks.unlock(category, '123456');
+        expect(
+          await locks.visibleItems([item], excludeConfiguredLocks: true),
+          isEmpty,
+        );
+        await locks.setLocked(category, false, password: '123456');
+        await locks.setTitleHidden(item, true);
+        expect(
+          await locks.visibleItems([item], excludeConfiguredLocks: true),
+          isEmpty,
+        );
+        await locks.setTitleHidden(item, false);
+        await locks.setHidden(category, true);
+        expect(
+          await locks.visibleItems([item], excludeConfiguredLocks: true),
+          isEmpty,
+        );
+      }
+    },
+  );
+  test(
+    'history resolves legacy category before excluding an unlocked configured category',
+    () async {
+      final locks = CategoryLocks('legacy-history');
+      await locks.setPassword('123456');
+      const category = Category('7', '', ContentType.movies);
+      await locks.setLocked(category, true);
+      locks.unlock(category, '123456');
+      final provider = LockedProvider(CatalogFixture(), locks);
+      expect(
+        await provider.visibleSavedItems([
+          const ContentItem(id: '42', name: 'Legacy', type: ContentType.movies),
+        ], excludeConfiguredLocks: true),
+        isEmpty,
+      );
+      provider.dispose();
+    },
+  );
   test('PIN requires six ASCII digits and preserves leading zeroes', () async {
     final locks = CategoryLocks('six');
     for (final invalid in [

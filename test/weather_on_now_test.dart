@@ -1,3 +1,5 @@
+import 'package:iptv_flutter/application/watch_history.dart';
+import 'package:iptv_flutter/application/category_locks.dart';
 import 'package:iptv_flutter/data/last_live_channel.dart';
 import 'package:iptv_flutter/presentation/weather_scene_painter.dart';
 import 'package:iptv_flutter/presentation/raincoat_weather_painter.dart';
@@ -31,6 +33,57 @@ WeatherService fixture() => WeatherService(
         },
 );
 void main() {
+  testWidgets('On Now immediately removes locked and hidden channels', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final provider = GuideProvider();
+    WatchHistory.attach(
+      provider,
+      const ProviderConfig(
+        providerId: 'fixture',
+        server: '',
+        username: '',
+        password: '',
+        profileId: 'weather-on-now-0',
+      ),
+    );
+    final locks = CategoryLocks.forProvider(provider);
+    await locks.setPassword('123456');
+    const channel = ContentItem(
+      id: 'on-now-restricted',
+      name: 'Restricted channel',
+      type: ContentType.live,
+      categoryId: '7',
+    );
+    await LastLiveChannel.forProvider(provider).save(channel);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            height: 230,
+            child: OnNowPanel(provider: provider, onOpen: (_) async {}),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(channel.name), findsOneWidget);
+    await locks.setTitleLocked(channel, true);
+    locks.unlockTitle(channel, '123456');
+    await tester.pumpAndSettle();
+    expect(find.text(channel.name), findsNothing);
+    await locks.setTitleLocked(channel, false, password: '123456');
+    await tester.pumpAndSettle();
+    expect(find.text(channel.name), findsOneWidget);
+    await locks.setTitleHidden(channel, true);
+    await tester.pumpAndSettle();
+    expect(find.text(channel.name), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    provider.dispose();
+  });
   testWidgets('compact weather uses degree and middle-dot Unicode characters', (
     tester,
   ) async {
@@ -168,6 +221,16 @@ void main() {
       expect(find.text('Overcast'), findsOneWidget);
       expect(tester.takeException(), isNull);
       final provider = GuideProvider();
+      WatchHistory.attach(
+        provider,
+        const ProviderConfig(
+          providerId: 'fixture',
+          server: '',
+          username: '',
+          password: '',
+          profileId: 'weather-on-now-1',
+        ),
+      );
       await LastLiveChannel.forProvider(provider).save(
         const ContentItem(
           id: '1',
@@ -196,41 +259,51 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-  testWidgets(
-    'On Now fits only the three most recent channels without scrolling',
-    (tester) async {
-      FlutterSecureStorage.setMockInitialValues({});
-      final provider = GuideProvider();
-      for (var i = 1; i <= 5; i++) {
-        await LastLiveChannel.forProvider(provider).save(
-          ContentItem(id: '$i', name: 'Recent $i', type: ContentType.live),
-        );
-      }
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: 340,
-              height: 210,
-              child: OnNowPanel(provider: provider, onOpen: (_) async {}),
-            ),
+  testWidgets('On Now fits all five most recent channels without scrolling', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final provider = GuideProvider();
+    WatchHistory.attach(
+      provider,
+      const ProviderConfig(
+        providerId: 'fixture',
+        server: '',
+        username: '',
+        password: '',
+        profileId: 'weather-on-now-2',
+      ),
+    );
+    for (var i = 1; i <= 5; i++) {
+      await LastLiveChannel.forProvider(
+        provider,
+      ).save(ContentItem(id: '$i', name: 'Recent $i', type: ContentType.live));
+    }
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            height: 210,
+            child: OnNowPanel(provider: provider, onOpen: (_) async {}),
           ),
         ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(ListTile), findsNWidgets(3));
-      expect(find.text('Recent 5'), findsOneWidget);
-      expect(find.text('Recent 4'), findsOneWidget);
-      expect(find.text('Recent 3'), findsOneWidget);
-      expect(find.text('Recent 2'), findsNothing);
-      expect(find.byType(Scrollable), findsNothing);
-      expect(
-        tester.getBottomRight(find.text('Recent 3')).dy,
-        lessThanOrEqualTo(210),
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      provider.dispose();
-    },
-  );
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(ListTile), findsNWidgets(5));
+    expect(find.text('Recent 5'), findsOneWidget);
+    expect(find.text('Recent 4'), findsOneWidget);
+    expect(find.text('Recent 3'), findsOneWidget);
+    expect(find.text('Recent 2'), findsOneWidget);
+    expect(find.text('Recent 1'), findsOneWidget);
+    expect(find.byType(Scrollable), findsNothing);
+    expect(
+      tester.getBottomRight(find.text('Recent 1')).dy,
+      lessThanOrEqualTo(210),
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    provider.dispose();
+  });
 }

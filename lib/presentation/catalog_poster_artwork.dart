@@ -1,5 +1,7 @@
-import 'dart:async';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'artwork_retry.dart';
+import 'artwork_visibility.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import '../domain/iptv_provider.dart';
 import 'package:flutter/material.dart';
 import '../data/tmdb_artwork_service.dart';
@@ -21,84 +23,82 @@ class CatalogPosterArtwork extends StatefulWidget {
 }
 
 class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
-  static final slowHosts = <String>{};
   static final resolvedFallbacks = <String, Uri>{};
+  static final pendingFallbacks = <String, Future<Uri?>>{};
   String get artworkKey =>
-      '${identityHashCode(widget.service ?? TmdbArtworkService.configured)}:${identityHashCode(widget.provider)}:${widget.item.type.name}:${widget.item.id}:${widget.item.name}';
+      '${identityHashCode(widget.service ?? TmdbArtworkService.configured)}:${identityHashCode(widget.provider)}:${widget.item.type.name}:${widget.item.id}:${widget.item.name}:${widget.item.artwork}';
   Future<Uri?>? fallback;
-  Timer? deadline;
-  bool loaded = false, stalled = false;
-  @override
-  void initState() {
-    super.initState();
-    startDeadline();
-  }
-
-  Future<void> restoreCachedFallback() async {
-    final key = artworkKey;
-    final uri = await (widget.service ?? TmdbArtworkService.configured)
-        .cachedPoster(widget.item);
-    if (mounted && artworkKey == key && !loaded && uri != null) {
-      setState(() {
-        fallback = Future.value(uri);
-        stalled = true;
-      });
-    }
-  }
-
-  void startDeadline() {
-    unawaited(restoreCachedFallback());
-    deadline?.cancel();
-    loaded = false;
-    stalled = resolvedFallbacks.containsKey(artworkKey);
-    if (widget.item.artwork != null) {
-      deadline = Timer(
-        slowHosts.contains(widget.item.artwork!.host)
-            ? const Duration(milliseconds: 300)
-            : const Duration(milliseconds: 1500),
-        () {
-          if (mounted && !loaded) {
-            if (slowHosts.length >= 32) slowHosts.remove(slowHosts.first);
-            slowHosts.add(widget.item.artwork!.host);
-            setState(() => stalled = true);
-          }
-        },
-      );
-    }
-  }
-
+  ArtworkRetryScope retries = ArtworkRetryScope();
+  bool eligible = false, providerFailed = false;
   @override
   void dispose() {
-    deadline?.cancel();
+    retries.dispose();
     super.dispose();
   }
 
-  Future<Uri?> resolveFallback() async {
-    final cached = resolvedFallbacks[artworkKey];
+  void visibility(bool value) {
+    if (eligible == value) return;
+    eligible = value;
+    retries.dispose();
+    retries = ArtworkRetryScope();
+    fallback = null;
+  }
+
+  Future<Uri?> recoveringFallback() {
+    final key = artworkKey;
+    return retryArtwork<Uri?>(
+      scope: retries,
+      load: resolveFallback,
+      usable: (value) => value != null,
+      active: () => mounted && eligible && artworkKey == key,
+    );
+  }
+
+  void providerFailure() {
+    final key = artworkKey;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && key == artworkKey && !providerFailed) {
+        setState(() => providerFailed = true);
+      }
+    });
+  }
+
+  Future<Uri?> resolveFallback() =>
+      pendingFallbacks.putIfAbsent(artworkKey, () {
+        final key = artworkKey;
+        return lookupFallback().whenComplete(() {
+          pendingFallbacks.remove(key);
+        });
+      });
+  Future<Uri?> lookupFallback() async {
+    final key = artworkKey;
+    final item = widget.item;
+    final provider = widget.provider;
+    final cached = resolvedFallbacks[key];
     if (cached != null) return cached;
     final service = widget.service ?? TmdbArtworkService.configured;
     if (!service.client.enabled) return null;
-    final poster = await service.poster(widget.item);
+    final poster = await service.poster(item);
     if (poster != null) {
       if (resolvedFallbacks.length >= 200) {
         resolvedFallbacks.remove(resolvedFallbacks.keys.first);
       }
-      resolvedFallbacks[artworkKey] = poster;
+      resolvedFallbacks[key] = poster;
       return poster;
     }
-    if (widget.provider == null) return null;
+    if (provider == null) return null;
     try {
       // Duplicate names need the provider's release year or TMDB ID; do not
       // guess between unrelated shows that happen to have the same name.
-      final details = widget.item.type == ContentType.series
-          ? (await widget.provider!.getSeriesDetails(widget.item)).details
-          : await widget.provider!.getMovieDetails(widget.item);
+      final details = item.type == ContentType.series
+          ? (await provider.getSeriesDetails(item)).details
+          : await provider.getMovieDetails(item);
       final resolved = await service.detailsPoster(details);
       if (resolved != null) {
         if (resolvedFallbacks.length >= 200) {
           resolvedFallbacks.remove(resolvedFallbacks.keys.first);
         }
-        resolvedFallbacks[artworkKey] = resolved;
+        resolvedFallbacks[key] = resolved;
       }
       return resolved;
     } catch (_) {
@@ -112,10 +112,13 @@ class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
     if (oldWidget.item.id != widget.item.id ||
         oldWidget.item.type != widget.item.type ||
         oldWidget.item.name != widget.item.name ||
+        oldWidget.item.artwork != widget.item.artwork ||
         oldWidget.service != widget.service ||
         oldWidget.provider != widget.provider) {
+      retries.dispose();
+      retries = ArtworkRetryScope();
       fallback = null;
-      startDeadline();
+      providerFailed = false;
     }
   }
 
@@ -123,55 +126,47 @@ class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
     color: Color(0xff202833),
     child: Center(child: Icon(Icons.movie_outlined, color: Colors.white38)),
   );
-  Widget tmdb() => FutureBuilder<Uri?>(
-    future: fallback ??= resolveFallback(),
-    builder: (context, snapshot) => snapshot.data == null
-        ? placeholder()
-        : CachedNetworkImage(
-            imageUrl: snapshot.data.toString(),
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: double.infinity,
-            memCacheWidth: 342,
-            maxWidthDiskCache: 342,
-            placeholder: (_, _) => placeholder(),
-            errorWidget: (_, _, _) => placeholder(),
-          ),
-  );
+  Widget tmdb() => !eligible
+      ? placeholder()
+      : FutureBuilder<Uri?>(
+          future: fallback ??= recoveringFallback(),
+          builder: (context, snapshot) => snapshot.data == null
+              ? placeholder()
+              : SharedArtworkImage(
+                  kind: ArtworkKind.poster,
+                  imageUrl: snapshot.data.toString(),
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  placeholder: (_, _) => placeholder(),
+                  errorWidget: (_, _, _) => placeholder(),
+                ),
+        );
   @override
-  Widget build(BuildContext context) {
-    final image = widget.item.artwork;
-    if (image == null ||
-        !['http', 'https'].contains(image.scheme) ||
-        image.host.isEmpty) {
-      return tmdb();
-    }
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (stalled) tmdb(),
-        CachedNetworkImage(
-          imageUrl: image.toString(),
-          imageBuilder: (context, provider) {
-            loaded = true;
-            deadline?.cancel();
-            return Image(
-              image: provider,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: double.infinity,
-            );
-          },
-          fit: BoxFit.cover,
-          width: double.infinity,
-          height: double.infinity,
-          memCacheWidth: 342,
-          maxWidthDiskCache: 342,
-          placeholder: (_, _) =>
-              stalled ? const SizedBox.expand() : placeholder(),
-          errorWidget: (_, _, _) => tmdb(),
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => ArtworkVisibility(
+    builder: (context, visible) {
+      visibility(visible);
+      final image = widget.item.artwork;
+      if (image == null ||
+          !['http', 'https'].contains(image.scheme) ||
+          image.host.isEmpty) {
+        return tmdb();
+      }
+      if (providerFailed || resolvedFallbacks.containsKey(artworkKey)) {
+        return tmdb();
+      }
+      return SharedArtworkImage(
+        kind: ArtworkKind.poster,
+        imageUrl: image.toString(),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: (_, _) => placeholder(),
+        errorWidget: (_, _, _) {
+          providerFailure();
+          return tmdb();
+        },
+      );
+    },
+  );
 }

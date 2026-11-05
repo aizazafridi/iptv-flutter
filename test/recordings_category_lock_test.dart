@@ -5,7 +5,7 @@ import 'package:iptv_flutter/domain/models.dart';
 
 void main() {
   test(
-    'recordings protection persists separately by media type and profile',
+    'recordings protection is shared by media types and isolated by profile',
     () async {
       FlutterSecureStorage.setMockInitialValues({});
       final locks = CategoryLocks('recordings-user');
@@ -19,10 +19,14 @@ void main() {
       final restored = CategoryLocks('recordings-user');
       await restored.load();
       expect(restored.isLocked(movies), isTrue);
-      expect(restored.isLocked(series), isFalse);
+      expect(restored.isLocked(series), isTrue);
       expect(restored.hidden(live), isTrue);
       expect(restored.unlock(movies, '000000'), isFalse);
       expect(restored.unlock(movies, '123456'), isTrue);
+      expect(restored.isLocked(live), isFalse);
+      expect(restored.hidden(movies), isTrue);
+      await restored.setHidden(series, false);
+      expect(restored.hidden(live), isFalse);
       final other = CategoryLocks('other-recordings-user');
       await other.load();
       expect(other.configured(movies), isFalse);

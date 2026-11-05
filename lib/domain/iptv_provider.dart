@@ -30,3 +30,8 @@ abstract interface class CatchUpProvider {
     EpgProgramme programme,
   );
 }
+
+/// Provider-advertised simultaneous stream limit. Null means unknown/unlimited.
+abstract interface class StreamLimitProvider {
+  int? get maxConcurrentStreams;
+}

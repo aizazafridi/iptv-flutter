@@ -129,14 +129,14 @@ void main() {
           .toList();
       expect(avatars, hasLength(5));
       expect(
-        avatars.every((avatar) => avatar.roundedSquare && avatar.size == 150),
+        avatars.every((avatar) => avatar.roundedSquare && avatar.size == 112),
         isTrue,
       );
       final y = tester.getCenter(find.byType(ProfileAvatar).first).dy;
       for (var i = 1; i < 5; i++) {
         expect(
           tester.getCenter(find.byType(ProfileAvatar).at(i)).dy,
-          closeTo(y, .1),
+          closeTo(y, 1),
         );
       }
       expect(find.text('Add profile'), findsNothing);

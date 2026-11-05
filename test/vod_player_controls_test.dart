@@ -422,7 +422,7 @@ void main() {
       expect(overlay.height, lessThanOrEqualTo(720 * .31));
       expect(
         tester.getSize(find.byKey(const ValueKey('vod-play-pause'))).width,
-        50,
+        42,
       );
       final hiddenLabel = find
           .ancestor(

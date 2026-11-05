@@ -9,6 +9,108 @@ import 'widget_test.dart' show FakeProvider;
 
 void main() {
   testWidgets(
+    'visible missing poster retries and updates without reopening its card',
+    (tester) async {
+      var calls = 0;
+      final service = TmdbArtworkService(
+        persist: false,
+        client: TmdbCastService(
+          persist: false,
+          fetch: (uri) async {
+            calls++;
+            if (calls == 1) {
+              throw const FormatException('temporary metadata outage');
+            }
+            return {
+              'results': [
+                {
+                  'id': 100088,
+                  'name': 'The Last of Us',
+                  'poster_path': '/recovered.jpg',
+                },
+              ],
+            };
+          },
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CatalogPosterArtwork(
+            item: const ContentItem(
+              id: 'retry-visible',
+              name: 'The Last of Us',
+              type: ContentType.series,
+            ),
+            service: service,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(calls, 1);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(calls, 2);
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is CachedNetworkImage && w.imageUrl.endsWith('/recovered.jpg'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets('offstage category posters do not fetch metadata until shown', (
+    tester,
+  ) async {
+    var calls = 0, hidden = true;
+    late StateSetter update;
+    final service = TmdbArtworkService(
+      persist: false,
+      client: TmdbCastService(
+        persist: false,
+        fetch: (uri) async {
+          calls++;
+          return {
+            'results': [
+              {
+                'id': 100088,
+                'name': 'The Last of Us',
+                'poster_path': '/visible-only.jpg',
+              },
+            ],
+          };
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            update = setState;
+            return Offstage(
+              offstage: hidden,
+              child: CatalogPosterArtwork(
+                item: const ContentItem(
+                  id: 'offstage',
+                  name: 'The Last of Us',
+                  type: ContentType.series,
+                ),
+                service: service,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(calls, 0);
+    update(() => hidden = false);
+    await tester.pumpAndSettle();
+    expect(calls, 1);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
     'ambiguous posters use provider metadata instead of guessing between same-named shows',
     (tester) async {
       final paths = <String>[];
@@ -131,7 +233,7 @@ void main() {
           find.byWidgetPredicate(
             (w) =>
                 w is CachedNetworkImage &&
-                w.imageUrl.endsWith('/w342/poster.jpg'),
+                w.imageUrl.endsWith('/w185/poster.jpg'),
           ),
           findsOneWidget,
         );
@@ -167,6 +269,7 @@ void main() {
         ),
       ),
     );
+    await tester.pump();
     expect(calls, 0);
     expect(
       tester

@@ -206,6 +206,31 @@ class WatchHistory extends ChangeNotifier {
     }
   }
 
+  Future<void> removeTitle(ContentItem item) async {
+    await _load();
+    final before = _entries;
+    final revision = ++_revision;
+    _entries = _entries
+        .where(
+          (entry) => entry.item.type != item.type || entry.item.id != item.id,
+        )
+        .toList();
+    final value = jsonEncode(_entries.map((entry) => entry.toJson()).toList());
+    final write = _queue(
+      () => storage.write(key: 'watch_history:$scope', value: value),
+    );
+    notifyListeners();
+    try {
+      await write;
+    } catch (_) {
+      if (_revision == revision) {
+        _entries = before;
+        notifyListeners();
+      }
+      rethrow;
+    }
+  }
+
   Future<void> save(WatchEntry entry) async {
     await _load();
     // Buffering, startup and shutdown can report zero/unknown values. These

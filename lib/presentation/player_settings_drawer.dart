@@ -7,12 +7,16 @@ class PlayerSettingsDrawer extends StatefulWidget {
   final int seekSeconds;
   final String? ratio;
   final bool allowSpeed;
+  final Future<void> Function()? onRecord;
+  final bool recording;
   final Future<void> Function(bool) onAutoplay;
   final Future<void> Function(double) onRate;
   final Future<void> Function(int) onSeek;
   final Future<void> Function(String) onRatio;
   const PlayerSettingsDrawer({
     super.key,
+    this.onRecord,
+    this.recording = false,
     required this.autoplay,
     required this.rate,
     required this.seekSeconds,
@@ -32,6 +36,7 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
   late double rate = widget.rate;
   late int seek = widget.seekSeconds;
   late String? ratio = widget.ratio;
+  late bool recording = widget.recording;
   bool busy = false;
   String? error;
   Future<void> apply(
@@ -167,7 +172,7 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
     bool light = false,
   }) => OutlinedButton(
     autofocus: autofocus,
-    onPressed: busy ? null : action,
+    onPressed: action,
     style: ButtonStyle(
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       minimumSize: const WidgetStatePropertyAll(Size(48, 34)),
@@ -221,6 +226,7 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
               '$value\u00d7',
               rate == value,
               () => apply(() => widget.onRate(value), () => rate = value),
+              autofocus: widget.autoplay == null && value == 1.0,
             ),
         ], first: widget.autoplay == null),
       row('seek', 'Seek Interval', '$seek seconds', [
@@ -230,6 +236,8 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
             seek == value,
             () => apply(() => widget.onSeek(value), () => seek = value),
             light: true,
+            autofocus:
+                widget.autoplay == null && !widget.allowSpeed && value == 10,
           ),
       ]),
       if (ratio != null)
@@ -247,6 +255,14 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
               ratio == value,
               () => apply(() => widget.onRatio(value), () => ratio = value),
             ),
+        ]),
+      if (widget.onRecord != null)
+        row('record', 'Record', recording ? 'Recording' : 'Off', [
+          option(
+            recording ? 'Stop recording' : 'Start recording',
+            recording,
+            () => apply(widget.onRecord!, () => recording = !recording),
+          ),
         ]),
       if (error != null)
         Text(

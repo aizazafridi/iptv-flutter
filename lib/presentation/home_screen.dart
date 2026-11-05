@@ -575,10 +575,7 @@ class _HomeScreenState extends State<HomeScreen> {
       decoration: InputDecoration(
         labelText: fieldLabels[index],
         isDense: true,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 14,
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         suffixIcon: const Icon(Icons.edit_outlined, size: 18),
       ),
       validator: (value) {
@@ -634,7 +631,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       width: 3,
                     ),
                   ),
-                  child: ProfileAvatar(index, size: 48),
+                  child: ProfileAvatar(index, size: 38),
                 ),
               ),
             ),
@@ -722,7 +719,27 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget login() => LayoutBuilder(
+  Widget login() => Theme(
+    data: Theme.of(context).copyWith(
+      textTheme: Theme.of(context).textTheme.apply(fontSizeFactor: .82),
+      visualDensity: VisualDensity.compact,
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          minimumSize: const Size(0, 36),
+          textStyle: const TextStyle(fontSize: 13),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          minimumSize: const Size(0, 36),
+          textStyle: const TextStyle(fontSize: 13),
+        ),
+      ),
+    ),
+    child: accountForm(),
+  );
+
+  Widget accountForm() => LayoutBuilder(
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 700;
       final fields = Column(
@@ -774,7 +791,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: wide ? 900 : 460),
+            constraints: BoxConstraints(maxWidth: wide ? 760 : 440),
             child: Form(
               key: form,
               child: Column(
@@ -785,7 +802,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SizedBox(width: 230, child: accountAvatars()),
+                        SizedBox(width: 190, child: accountAvatars()),
                         const SizedBox(width: 32),
                         Expanded(child: fields),
                       ],

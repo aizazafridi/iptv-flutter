@@ -5,6 +5,56 @@ import 'package:iptv_flutter/presentation/media_horizontal_rail.dart';
 
 void main() {
   testWidgets(
+    'focus moves during scrolling and rapid navigation settles on the latest tile',
+    (tester) async {
+      final key = GlobalKey<MediaHorizontalRailState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 450,
+                height: 180,
+                child: MediaHorizontalRail(
+                  key: key,
+                  count: 20,
+                  width: 150,
+                  height: 180,
+                  up: () {},
+                  down: () {},
+                  itemBuilder: (i, node) => TextButton(
+                    focusNode: node,
+                    onPressed: () {},
+                    child: Text('Tile $i'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await key.currentState!.focusAt(2);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(key.currentState!.node(3).hasFocus, isTrue);
+      await tester.pump(const Duration(milliseconds: 70));
+      expect(key.currentState!.controller.offset, greaterThan(0));
+      expect(key.currentState!.controller.offset, lessThan(150));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump(const Duration(milliseconds: 30));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump(const Duration(milliseconds: 30));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      expect(key.currentState!.current, 4);
+      expect(key.currentState!.node(4).hasFocus, isTrue);
+      expect(key.currentState!.controller.offset % 150, closeTo(0, .01));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
     'a new category never inherits the previous category scroll offset',
     (tester) async {
       final first = GlobalKey<MediaHorizontalRailState>(),

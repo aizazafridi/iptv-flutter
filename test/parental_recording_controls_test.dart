@@ -77,7 +77,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final switches = find.byType(Switch);
+      final switches = find.descendant(
+        of: find.byKey(const ValueKey('7')),
+        matching: find.byType(Switch),
+      );
       await tester.tap(switches.at(0));
       await tester.pumpAndSettle();
       await tester.tap(switches.at(1));
@@ -136,6 +139,18 @@ void main() {
         bytes: 4096,
       ),
     ];
+    for (final type in [ContentType.live, ContentType.series]) {
+      store.entries.add(
+        VideoRecording(
+          id: type.name,
+          title: 'Saved ${type.label}',
+          item: ContentItem(id: type.name, name: type.label, type: type),
+          created: DateTime.now(),
+          durationMs: 1000,
+          bytes: 1024,
+        ),
+      );
+    }
     VideoRecordings.attach(store.scope, store);
     await tester.pumpWidget(
       MaterialApp(
@@ -146,19 +161,21 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(find.text('Saved Live TV'), findsOneWidget);
+    expect(find.text('Saved Series'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pumpAndSettle();
     final delete = tester.widget<IconButton>(
       find.byWidgetPredicate(
         (widget) =>
             widget is IconButton && widget.tooltip == 'Delete recording',
-      ),
+      ).first,
     );
     expect(delete.focusNode!.hasPrimaryFocus, isTrue);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(store.entries, isEmpty);
-    expect(find.text('No saved recordings for this account.'), findsOneWidget);
+    expect(store.entries.map((entry) => entry.id), ['live', 'series']);
+    expect(find.text('Saved movie'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     provider.dispose();
   });

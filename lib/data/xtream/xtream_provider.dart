@@ -4,7 +4,10 @@ import '../../domain/models.dart';
 import 'xtream_client.dart';
 
 /// All Xtream response mapping lives here. No raw dictionaries reach a screen.
-class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
+class XtreamProvider
+    implements IptvProvider, EpgProvider, CatchUpProvider, StreamLimitProvider {
+  @override
+  int? maxConcurrentStreams;
   final XtreamClient client;
   @override
   final String displayName;
@@ -75,6 +78,8 @@ class XtreamProvider implements IptvProvider, EpgProvider, CatchUpProvider {
         'Authentication failed. Check your account credentials.',
       );
     }
+    final limit = int.tryParse(_text(user['max_connections']));
+    maxConcurrentStreams = limit != null && limit > 0 ? limit : null;
     final timestamp = int.tryParse(_text(user['exp_date']));
     DateTime? expiry;
     if (timestamp != null && timestamp > 0 && timestamp < 8640000000000) {

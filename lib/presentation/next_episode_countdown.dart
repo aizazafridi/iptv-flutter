@@ -1,5 +1,6 @@
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../domain/models.dart';
 
 /// An overlay on the existing video surface; never owns playback.
@@ -108,7 +109,8 @@ class _NextEpisodeCountdownState extends State<NextEpisodeCountdown>
                       color: Color(0xff293443),
                       child: Icon(Icons.live_tv, color: Colors.white54),
                     )
-                  : CachedNetworkImage(
+                  : SharedArtworkImage(
+                      kind: ArtworkKind.episode,
                       imageUrl: image.toString(),
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) => const ColoredBox(

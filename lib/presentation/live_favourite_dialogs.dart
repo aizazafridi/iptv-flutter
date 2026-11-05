@@ -1,3 +1,5 @@
+import '../application/browsing_mode.dart';
+import 'live_group_manager.dart';
 import 'package:flutter/material.dart';
 import '../application/live_favourite_groups.dart';
 import '../application/my_list.dart';
@@ -11,7 +13,8 @@ Future<String?> showLiveGroupName(
   LiveFavouriteGroup? group,
 }) => showDialog<String>(
   context: context,
-  builder: (_) => _GroupName(groups: groups, group: group),
+  builder: (context) =>
+      liveGroupsTheme(context, _GroupName(groups: groups, group: group)),
 );
 
 class _GroupName extends StatefulWidget {
@@ -90,7 +93,10 @@ Future<void> showLiveFavouriteDialog(
   if (!context.mounted) return;
   await showDialog<void>(
     context: context,
-    builder: (_) => _Membership(provider: provider, channel: channel),
+    builder: (context) => liveGroupsTheme(
+      context,
+      _Membership(provider: provider, channel: channel),
+    ),
   );
 }
 
@@ -106,119 +112,134 @@ class _MembershipState extends State<_Membership> {
   late final groups = LiveFavouriteGroups.forProvider(widget.provider);
   late final list = MyList.forProvider(widget.provider);
   late final selected = groups.memberships(widget.channel.id);
-  late final original = Set<String>.of(selected);
-  late bool favorite = list.contains(widget.channel);
+  late bool general = groups.generalContains(
+    widget.channel.id,
+    saved: list.contains(widget.channel),
+  );
   bool busy = false;
   String? error;
   Future<void> save() async {
-    if (!favorite && original.length > 1) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Remove from all groups?'),
-          content: const Text(
-            'This channel will be removed from All Favorites and every custom group.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Remove'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-    }
+    if (busy) return;
     setState(() {
       busy = true;
       error = null;
     });
     try {
-      await groups.assign(widget.channel.id, favorite ? selected : {});
-      try {
-        if (list.contains(widget.channel) != favorite) {
-          await list.toggle(widget.channel);
-        }
-      } catch (_) {
-        await groups.assign(widget.channel.id, original);
-        rethrow;
-      }
+      await list.saveLiveMembership(widget.channel, selected, general: general);
       if (mounted) Navigator.pop(context);
     } catch (_) {
       if (mounted) {
         setState(() {
           busy = false;
-          error =
-              'Could not save changes. Your selections are kept. Please retry.';
+          error = 'Could not save. Your selections are kept. Please try again.';
         });
       }
     }
+  }
+
+  Future<void> create() async {
+    final id = await showLiveGroupName(context, groups);
+    if (mounted && id != null) setState(() => selected.add(id));
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: AlertDialog(
-      title: const Text('Add to My List', style: TextStyle(fontSize: 20)),
+      backgroundColor: const Color(0xff1b222d),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Add to My List',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+          ),
+          SizedBox(height: 5),
+          Text(
+            'Choose where to save this channel',
+            style: TextStyle(fontSize: 13, color: Color(0xffaab8c9)),
+          ),
+        ],
+      ),
+      contentPadding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
       content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: ListenableBuilder(
-            listenable: groups,
-            builder: (_, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
+        width: 520,
+        height: (MediaQuery.sizeOf(context).height - 230).clamp(180.0, 390.0),
+        child: ListenableBuilder(
+          listenable: groups,
+          builder: (_, _) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (!BrowsingModeSettings.instance.lite) ...[
                     SizedBox.square(
-                      dimension: 42,
+                      dimension: 40,
                       child: ChannelLogo(widget.channel.artwork),
                     ),
                     const SizedBox(width: 12),
-                    Expanded(child: Text(widget.channel.name)),
+                  ],
+                  Expanded(
+                    child: Text(
+                      widget.channel.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                general || selected.isNotEmpty
+                    ? 'All Favorites: Included'
+                    : 'All Favorites: Not saved',
+                style: const TextStyle(fontSize: 12, color: Color(0xffaab8c9)),
+              ),
+              const SizedBox(height: 6),
+              Expanded(
+                child: ListView(
+                  children: [
+                    LiveGroupRow(
+                      label: 'General Favorites',
+                      selected: general,
+                      autofocus: true,
+                      onPressed: busy
+                          ? null
+                          : () => setState(() => general = !general),
+                    ),
+                    for (final group in groups.groups)
+                      LiveGroupRow(
+                        key: ValueKey(group.id),
+                        label: group.name,
+                        selected: selected.contains(group.id),
+                        onPressed: busy
+                            ? null
+                            : () => setState(() {
+                                if (!selected.add(group.id)) {
+                                  selected.remove(group.id);
+                                }
+                              }),
+                      ),
                   ],
                 ),
-                CheckboxListTile(
-                  autofocus: true,
-                  title: const Text('All Favorites'),
-                  value: favorite,
-                  onChanged: busy
-                      ? null
-                      : (value) => setState(() {
-                          favorite = value!;
-                          if (!favorite) selected.clear();
-                        }),
+              ),
+              TextButton.icon(
+                onPressed: busy ? null : create,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Create New Group'),
+              ),
+              Text(
+                'Saved to ${selected.length} ${selected.length == 1 ? 'group' : 'groups'}',
+                style: const TextStyle(fontSize: 12, color: Color(0xffaab8c9)),
+              ),
+              if (error != null)
+                Text(
+                  error!,
+                  style: const TextStyle(fontSize: 12, color: Colors.redAccent),
                 ),
-                for (final group in groups.groups)
-                  CheckboxListTile(
-                    title: Text(group.name),
-                    value: selected.contains(group.id),
-                    onChanged: busy
-                        ? null
-                        : (value) => setState(() {
-                            if (value!) {
-                              selected.add(group.id);
-                              favorite = true;
-                            } else {
-                              selected.remove(group.id);
-                            }
-                          }),
-                  ),
-                TextButton.icon(
-                  onPressed: busy
-                      ? null
-                      : () => showLiveGroupName(context, groups),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create New Group'),
-                ),
-                if (error != null)
-                  Text(error!, style: const TextStyle(color: Colors.redAccent)),
-              ],
-            ),
+            ],
           ),
         ),
       ),
@@ -228,10 +249,137 @@ class _MembershipState extends State<_Membership> {
           child: const Text('Cancel'),
         ),
         FilledButton(
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(0, 36),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            textStyle: const TextStyle(fontSize: 13),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
           onPressed: busy ? null : save,
-          child: Text(busy ? 'Saving?' : 'Save Changes'),
+          child: Text(busy ? 'Saving...' : 'Save to My List'),
         ),
       ],
+    ),
+  );
+}
+
+Widget liveGroupsTheme(BuildContext context, Widget child) => Theme(
+  data: Theme.of(context).copyWith(
+    colorScheme: const ColorScheme.dark(
+      primary: Color(0xff64b5f6),
+      onPrimary: Color(0xff0d121b),
+      surface: Color(0xff1b222d),
+    ),
+  ),
+  child: child,
+);
+
+/// One focus target per row: checked membership and remote focus are separate.
+class LiveGroupRow extends StatefulWidget {
+  final String label;
+  final String? subtitle;
+  final bool selected, autofocus;
+  final VoidCallback? onPressed;
+  final FocusNode? focusNode;
+  final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
+  const LiveGroupRow({
+    super.key,
+    required this.label,
+    required this.onPressed,
+    this.subtitle,
+    this.selected = false,
+    this.autofocus = false,
+    this.focusNode,
+    this.onKeyEvent,
+  });
+  @override
+  State<LiveGroupRow> createState() => _LiveGroupRowState();
+}
+
+class _LiveGroupRowState extends State<LiveGroupRow> {
+  final own = FocusNode();
+  FocusNode get node => widget.focusNode ?? own;
+  @override
+  void dispose() {
+    own.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Focus(
+    canRequestFocus: false,
+    onKeyEvent: widget.onKeyEvent,
+    child: ListenableBuilder(
+      listenable: node,
+      builder: (_, _) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: TextButton(
+          focusNode: node,
+          autofocus: widget.autofocus,
+          onPressed: widget.onPressed,
+          onFocusChange: (value) {
+            if (value) {
+              Scrollable.ensureVisible(
+                context,
+                alignment: .5,
+                duration: const Duration(milliseconds: 120),
+              );
+            }
+          },
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.white,
+            minimumSize: const Size(double.infinity, 44),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            backgroundColor: node.hasFocus
+                ? const Color(0xff30445d)
+                : const Color(0xff252f3d),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(9),
+              side: BorderSide(
+                color: node.hasFocus
+                    ? const Color(0xff64b5f6)
+                    : Colors.transparent,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                    if (widget.subtitle != null)
+                      Text(
+                        widget.subtitle!,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xffaab8c9),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                widget.selected
+                    ? Icons.check_circle_outline
+                    : Icons.circle_outlined,
+                color: widget.selected
+                    ? const Color(0xff64b5f6)
+                    : Colors.white38,
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+      ),
     ),
   );
 }
@@ -239,127 +387,4 @@ class _MembershipState extends State<_Membership> {
 Future<void> showLiveGroupManager(
   BuildContext context,
   IptvProvider provider,
-) async {
-  final groups = LiveFavouriteGroups.forProvider(provider);
-  final favorites = await MyList.forProvider(provider).items(ContentType.live);
-  await groups.load();
-  if (!context.mounted) return;
-  await showDialog<void>(
-    context: context,
-    builder: (context) => StatefulBuilder(
-      builder: (context, update) {
-        Future<void> action(Future<void> Function() operation) async {
-          try {
-            await operation();
-          } catch (_) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Could not save groups. Please retry.'),
-                ),
-              );
-            }
-          }
-        }
-
-        return AlertDialog(
-          title: const Text('Manage Groups'),
-          content: SizedBox(
-            width: 520,
-            height: 300,
-            child: ListenableBuilder(
-              listenable: groups,
-              builder: (_, _) => ListView(
-                children: [
-                  ListTile(
-                    title: const Text('All Favorites'),
-                    subtitle: Text('${favorites.length} channels'),
-                  ),
-                  for (final group in groups.groups)
-                    ListTile(
-                      title: Text(group.name),
-                      subtitle: Text(
-                        '${groups.channels(group.id, favorites).length} channels',
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: 'Rename ${group.name}',
-                            icon: const Icon(Icons.edit_outlined),
-                            onPressed: () => showLiveGroupName(
-                              context,
-                              groups,
-                              group: group,
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: 'Move ${group.name} up',
-                            icon: const Icon(Icons.arrow_upward),
-                            onPressed: groups.groups.first.id == group.id
-                                ? null
-                                : () => action(
-                                    () => groups.moveGroup(group.id, -1),
-                                  ),
-                          ),
-                          IconButton(
-                            tooltip: 'Move ${group.name} down',
-                            icon: const Icon(Icons.arrow_downward),
-                            onPressed: groups.groups.last.id == group.id
-                                ? null
-                                : () => action(
-                                    () => groups.moveGroup(group.id, 1),
-                                  ),
-                          ),
-                          IconButton(
-                            tooltip: 'Delete ${group.name}',
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: () async {
-                              final yes = await showDialog<bool>(
-                                context: context,
-                                builder: (context) => AlertDialog(
-                                  title: Text('Delete ${group.name}?'),
-                                  content: const Text(
-                                    'Channels stay in All Favorites and other groups.',
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, false),
-                                      child: const Text('Cancel'),
-                                    ),
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(context, true),
-                                      child: const Text('Delete'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (yes == true) {
-                                await action(() => groups.delete(group.id));
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => showLiveGroupName(context, groups),
-              child: const Text('+ New Group'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
-            ),
-          ],
-        );
-      },
-    ),
-  );
-}
+) => openLiveGroupManager(context, provider);

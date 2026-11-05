@@ -1,6 +1,6 @@
+import '../application/browsing_mode.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../data/video_recordings.dart';
-import '../data/playback_preferences.dart';
 import 'package:flutter/material.dart';
 import '../application/appearance.dart';
 import '../application/session.dart';
@@ -167,6 +167,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (!mounted || choice == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear watch history?'),
+        content: Text(
+          'Clear ${choice == 'all' ? 'all watch history' : '$choice watch history'} for this profile? Other profiles are unaffected.',
+        ),
+        actions: [
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Clear history'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
     setState(() => clearingHistory = true);
     try {
       await WatchHistory.forProvider(
@@ -278,6 +299,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         actions: [
           TextButton(
+            autofocus: true,
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
@@ -321,90 +343,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (_) => LockPasswordDialog(locks: locks, setting: true),
     );
-  }
-
-  Future<void> playerDefaults() async {
-    final provider = widget.session.provider;
-    if (provider == null) return;
-    final preferences = PlaybackPreferences(
-      WatchHistory.forProvider(provider).scope,
-    );
-    final saved = await preferences.load();
-    if (!mounted) return;
-    var seek = [30, 60, 120, 180].contains(saved['seek'])
-        ? saved['seek'] as int
-        : 30;
-    var rate = [0.5, 1, 2, 3, 5].contains(saved['rate'])
-        ? (saved['rate'] as num).toDouble()
-        : 1.0;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: const Text('Playback defaults'),
-          content: SizedBox(
-            width: 300,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<int>(
-                  initialValue: seek,
-                  decoration: const InputDecoration(labelText: 'Seek interval'),
-                  items: [30, 60, 120, 180]
-                      .map(
-                        (value) => DropdownMenuItem(
-                          value: value,
-                          child: Text('$value seconds'),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value != null) update(() => seek = value);
-                  },
-                ),
-                DropdownButtonFormField<double>(
-                  initialValue: rate,
-                  decoration: const InputDecoration(
-                    labelText: 'Playback speed',
-                  ),
-                  items: [0.5, 1.0, 2.0, 3.0, 5.0]
-                      .map(
-                        (value) => DropdownMenuItem(
-                          value: value,
-                          child: Text(value == 1 ? 'Normal' : '${value}x'),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value != null) update(() => rate = value);
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await preferences.save({...saved, 'seek': seek, 'rate': rate});
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not save playback defaults.')),
-        );
-      }
-    }
   }
 
   @override
@@ -477,22 +415,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   if (widget.session.activeProfile != null) ...[
                     settingsCategory(
-                      icon: Icons.video_settings,
-                      title: 'Player settings',
-                      children: [
-                        ListTile(
-                          onTap: playerDefaults,
-                          title: const Text('Playback defaults'),
-                          subtitle: const Text(
-                            'Seek interval and playback speed',
-                          ),
-                        ),
-                      ],
-                    ),
-                    settingsCategory(
                       icon: Icons.palette_outlined,
                       title: 'Appearance and browsing',
                       children: [
+                        ListenableBuilder(
+                          listenable: BrowsingModeSettings.instance,
+                          builder: (context, _) => Column(
+                            children: [
+                              const ListTile(title: Text('Browsing Mode')),
+                              for (final mode in BrowsingMode.values)
+                                ListTile(
+                                  title: Text(
+                                    mode == BrowsingMode.premium
+                                        ? 'Premium'
+                                        : 'Lite',
+                                  ),
+                                  subtitle: Text(
+                                    mode == BrowsingMode.premium
+                                        ? 'Full artwork, cinematic backgrounds, and rich browsing experience.'
+                                        : 'Faster browsing with minimal artwork, designed for slower devices and connections.',
+                                  ),
+                                  selected:
+                                      BrowsingModeSettings.instance.mode ==
+                                      mode,
+                                  trailing:
+                                      BrowsingModeSettings.instance.mode == mode
+                                      ? const Icon(Icons.check)
+                                      : null,
+                                  onTap: () => BrowsingModeSettings.instance
+                                      .choose(mode),
+                                ),
+                              if (BrowsingModeSettings.instance.error != null)
+                                Text(BrowsingModeSettings.instance.error!),
+                            ],
+                          ),
+                        ),
+                        const ListTile(title: Text('Color')),
                         Padding(
                           padding: const EdgeInsets.all(12),
                           child: Wrap(
@@ -510,14 +468,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ],
                           ),
                         ),
-                        for (final type in ContentType.values)
-                          SwitchListTile(
-                            dense: true,
-                            title: Text('${type.label} cards'),
-                            value: widget.appearance.usesCards(type),
-                            onChanged: (value) =>
-                                widget.appearance.setCards(type, value),
-                          ),
                       ],
                     ),
                     settingsCategory(
@@ -572,6 +522,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                 ],
                               ),
+                            ListTile(
+                              title: const Text('Recordings'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => openParental(
+                                CategoryLockSettingsScreen(
+                                  provider: widget.session.provider!,
+                                  recordingsOnly: true,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ],

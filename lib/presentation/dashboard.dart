@@ -1,7 +1,10 @@
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
+import '../application/browsing_mode.dart';
+import 'lite_media_list.dart';
 import 'continue_watching_artwork.dart';
 import 'series_catalog_screen.dart';
 import 'package:flutter/services.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'live_tv_launch_screen.dart';
 import 'on_now_panel.dart';
 import 'weather_panel.dart';
@@ -22,7 +25,7 @@ import 'player_screen.dart';
 import 'recordings_library_screen.dart';
 import 'lock_password_dialog.dart';
 import 'title_access.dart';
-import 'search_screen.dart';
+import 'universal_search_screen.dart';
 import 'smooth_page_route.dart';
 
 const _accent = Color(0xff64b5f6);
@@ -186,6 +189,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     if (provider.supportedTypes.contains(ContentType.movies)) 'Movies',
     if (provider.supportedTypes.contains(ContentType.series)) 'Series',
     if (provider.supportedTypes.contains(ContentType.live)) 'TV Guide',
+    if (!parental.hidden(CategoryLocks.recordingsCategory(ContentType.live)))
+      'Recordings',
   ];
   FocusNode navNode(String title) => navNodes.putIfAbsent(
     title,
@@ -425,8 +430,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     ),
   );
   Future<void> recordings() async {
-    final type = await chooseType('Recordings');
-    if (type == null || !mounted) return;
+    const type = ContentType.live;
     final locks = CategoryLocks.forProvider(provider);
     await locks.load();
     final category = CategoryLocks.recordingsCategory(type);
@@ -451,31 +455,23 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
 
   Future<void> guide() =>
       push(LiveTvLaunchScreen(provider: provider, openGuide: true));
-  void search() => push(
-    DefaultTabController(
-      length: provider.supportedTypes.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Search'),
-          bottom: TabBar(
-            tabs: [
-              for (final type in provider.supportedTypes) Tab(text: type.label),
-            ],
-          ),
+  bool searchOpen = false;
+  Future<void> search() async {
+    if (searchOpen) return;
+    searchOpen = true;
+    try {
+      await push(
+        UniversalSearchScreen(
+          provider: provider,
+          session: widget.session,
+          onOpen: openItem,
         ),
-        body: TabBarView(
-          children: [
-            for (final type in provider.supportedTypes)
-              CatalogSearchScreen(
-                provider: provider,
-                type: type,
-                onOpen: openItem,
-              ),
-          ],
-        ),
-      ),
-    ),
-  );
+      );
+    } finally {
+      searchOpen = false;
+    }
+  }
+
   Widget nav(
     String title,
     IconData icon,
@@ -552,8 +548,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     canRequestFocus: false,
     child: AnimatedContainer(
       key: const ValueKey('dashboard-sidebar'),
-      duration: const Duration(milliseconds: 170),
-      curve: Curves.easeOut,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
       width: collapsed
           ? 76
           : (MediaQuery.sizeOf(context).width / 1920 * 240).clamp(172.0, 250.0),
@@ -603,6 +599,14 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                   ),
                 if (provider.supportedTypes.contains(ContentType.live))
                   nav('TV Guide', Icons.view_list_outlined, guide),
+                if (!parental.hidden(
+                  CategoryLocks.recordingsCategory(ContentType.live),
+                ))
+                  nav(
+                    'Recordings',
+                    Icons.fiber_manual_record_outlined,
+                    recordings,
+                  ),
               ],
             ),
           ),
@@ -686,8 +690,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     child: featureContent(),
     builder: (context, child) => AnimatedContainer(
       key: const ValueKey('dashboard-live-focus-border'),
-      duration: const Duration(milliseconds: 170),
-      curve: Curves.easeOut,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
       foregroundDecoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
@@ -830,11 +834,10 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                               size: 48,
                               color: Colors.white54,
                             )
-                          : CachedNetworkImage(
+                          : SharedArtworkImage(
+                              kind: ArtworkKind.poster,
                               imageUrl: item!.artwork.toString(),
                               fit: BoxFit.contain,
-                              memCacheWidth: 320,
-                              maxWidthDiskCache: 320,
                               errorWidget: (_, _, _) => const Icon(
                                 Icons.live_tv_rounded,
                                 size: 48,
@@ -856,6 +859,60 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     future: watching,
     builder: (context, snapshot) {
       final entries = snapshot.data ?? [];
+      if (BrowsingModeSettings.instance.lite) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Continue watching',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 160,
+              child: entries.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'Your unfinished movies and episodes will appear here.',
+                      ),
+                    )
+                  : LiteMediaList(
+                      items: entries.map((e) => e.item).toList(),
+                      up: () {
+                        if (provider.supportedTypes.contains(
+                          ContentType.live,
+                        )) {
+                          liveFocus.requestFocus();
+                        } else {
+                          searchFocus.requestFocus();
+                        }
+                      },
+                      left: returnToNavigation,
+                      onOpen: (item) async {
+                        await openItem(item);
+                      },
+                      subtitle: (item) {
+                        final entry = entries.firstWhere(
+                          (e) =>
+                              e.item.id == item.id && e.item.type == item.type,
+                        );
+                        return '${entry.item.type != ContentType.series || entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}${((entry.duration - entry.position).inSeconds / 60).ceil().clamp(0, 99999)} min left';
+                      },
+                      progress: (item) {
+                        final entry = entries.firstWhere(
+                          (e) =>
+                              e.item.id == item.id && e.item.type == item.type,
+                        );
+                        return entry.duration <= Duration.zero
+                            ? null
+                            : entry.position.inMilliseconds /
+                                  entry.duration.inMilliseconds;
+                      },
+                    ),
+            ),
+          ],
+        );
+      }
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -916,7 +973,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                       item: entry.item,
                       onTap: () => openItem(entry.item),
                       metadata:
-                          '${entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}$remaining min left',
+                          '${entry.item.type != ContentType.series || entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}$remaining min left',
                       progress: entry.duration.inSeconds <= 0
                           ? 0
                           : (entry.position.inSeconds /
@@ -1023,7 +1080,12 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
   );
 
   @override
-  Widget build(BuildContext context) => PopScope(
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: BrowsingModeSettings.instance,
+    builder: (context, _) => buildDashboard(context),
+  );
+
+  Widget buildDashboard(BuildContext context) => PopScope(
     canPop: false,
     onPopInvokedWithResult: (didPop, result) {
       if (!didPop && !seriesActive && !moviesActive) {
@@ -1155,33 +1217,17 @@ class _DashboardTitleCard extends StatefulWidget {
 
 class _DashboardTitleCardState extends State<_DashboardTitleCard> {
   bool focused = false;
-  String? prefetched;
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final uri = widget.item.artwork?.toString();
-    if (uri == null || uri == prefetched) return;
-    prefetched = uri;
-    // Only lazily constructed, visible/adjacent cards warm the image cache.
-    unawaited(
-      precacheImage(
-        ResizeImage(CachedNetworkImageProvider(uri, maxWidth: 480), width: 480),
-        context,
-        onError: (_, _) {},
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) => SizedBox(
     width: 220,
     child: AnimatedScale(
+      alignment: Alignment.centerLeft,
       scale: focused && !MediaQuery.disableAnimationsOf(context) ? 1.04 : 1,
-      duration: const Duration(milliseconds: 170),
-      curve: Curves.easeOut,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 170),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
           color: focused ? const Color(0xff293d54) : Colors.transparent,
@@ -1205,8 +1251,8 @@ class _DashboardTitleCardState extends State<_DashboardTitleCard> {
                   scrollable.position.ensureVisible(
                     renderObject,
                     alignment: .35,
-                    duration: const Duration(milliseconds: 170),
-                    curve: Curves.easeOut,
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOutCubic,
                   );
                 }
               }

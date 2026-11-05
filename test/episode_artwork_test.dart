@@ -92,7 +92,20 @@ void main() {
         );
         await tester.pumpAndSettle();
         if (broken) {
-          await tester.pump(const Duration(milliseconds: 1600));
+          // Simulate an explicit provider failure; elapsed time alone must not race a fallback.
+          final image = tester.widget<CachedNetworkImage>(
+            find.byType(CachedNetworkImage).first,
+          );
+          final fallback = image.errorWidget!(
+            tester.element(find.byType(CachedNetworkImage).first),
+            'unused',
+            Exception(),
+          );
+          await tester.pumpWidget(
+            MaterialApp(
+              home: SizedBox(width: 280, height: 160, child: fallback),
+            ),
+          );
           await tester.pumpAndSettle();
         }
         expect(

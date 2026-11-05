@@ -1,3 +1,5 @@
+import 'data/artwork_repository.dart';
+import 'application/browsing_mode.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,9 +11,10 @@ import 'data/credential_store.dart';
 import 'presentation/home_screen.dart';
 import 'presentation/focus_tooltips.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  ArtworkMetrics.install();
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks([
       'Roboto',
@@ -19,6 +22,7 @@ void main() {
   });
   FocusManager.instance.highlightStrategy =
       FocusHighlightStrategy.alwaysTraditional;
+  await BrowsingModeSettings.instance.load();
   runApp(const StreamlaneApp());
 }
 
@@ -109,6 +113,7 @@ class _StreamlaneAppState extends State<StreamlaneApp> {
                 ),
                 side: const BorderSide(color: Colors.white54),
               ).copyWith(
+                animationDuration: const Duration(milliseconds: 240),
                 backgroundColor: WidgetStateProperty.resolveWith(
                   (states) => states.contains(WidgetState.focused)
                       ? const Color(0xff7959bd)

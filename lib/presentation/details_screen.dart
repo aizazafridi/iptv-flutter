@@ -1,3 +1,6 @@
+import '../data/artwork_repository.dart';
+import '../application/browsing_mode.dart';
+import 'lite_details.dart';
 import 'package:flutter/material.dart';
 import '../application/watch_history.dart';
 import 'smooth_page_route.dart';
@@ -34,11 +37,17 @@ class _DetailsScreenState extends State<DetailsScreen> {
   Episode? episode;
   bool resolving = false;
   bool autoPlayStarted = false;
+  bool usableRecorded = false;
+  final artworkClock = Stopwatch()..start();
   WatchEntry? previous;
   late final history = WatchHistory.forProvider(widget.provider);
   @override
   void initState() {
     super.initState();
+    ArtworkMetrics.record(
+      'details_open',
+      values: {'type': widget.item.type.name},
+    );
     history.addListener(progressChanged);
     details = load();
   }
@@ -55,6 +64,19 @@ class _DetailsScreenState extends State<DetailsScreen> {
   }
 
   Future<(MediaDetails, List<Episode>)> load({bool refresh = false}) async {
+    final watch = Stopwatch()..start();
+    final result = await loadData(refresh: refresh);
+    ArtworkMetrics.record(
+      'details_metadata_ready',
+      values: {
+        'type': widget.item.type.name,
+        'elapsed_ms': watch.elapsedMilliseconds,
+      },
+    );
+    return result;
+  }
+
+  Future<(MediaDetails, List<Episode>)> loadData({bool refresh = false}) async {
     previous = await history.latest(widget.item);
     if (widget.item.type == ContentType.series) {
       final result = await (refresh
@@ -86,7 +108,12 @@ class _DetailsScreenState extends State<DetailsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: BrowsingModeSettings.instance,
+    builder: (context, _) => buildDetails(context),
+  );
+
+  Widget buildDetails(BuildContext context) => Scaffold(
     body: FutureBuilder<(MediaDetails, List<Episode>)>(
       future: details,
       builder: (context, snapshot) {
@@ -106,6 +133,20 @@ class _DetailsScreenState extends State<DetailsScreen> {
           );
         }
         final (info, episodes) = snapshot.data!;
+        if (!usableRecorded) {
+          usableRecorded = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ArtworkMetrics.record(
+                'details_usable_frame',
+                values: {
+                  'type': widget.item.type.name,
+                  'elapsed_ms': artworkClock.elapsedMilliseconds,
+                },
+              );
+            }
+          });
+        }
         if (widget.autoPlay &&
             !autoPlayStarted &&
             widget.item.type == ContentType.movies) {
@@ -125,6 +166,22 @@ class _DetailsScreenState extends State<DetailsScreen> {
               play(info.item, target, episodes, artwork: info.artwork);
             }
           });
+        }
+        if (BrowsingModeSettings.instance.lite) {
+          return LiteDetails(
+            provider: widget.provider,
+            info: info,
+            episodes: episodes,
+            previous: previous,
+            resolving: resolving,
+            onPlay: (episode, restart) => play(
+              info.item,
+              episode,
+              episodes,
+              artwork: info.artwork,
+              fromBeginning: restart,
+            ),
+          );
         }
         if (widget.item.type == ContentType.series) {
           return CinematicSeriesDetails(

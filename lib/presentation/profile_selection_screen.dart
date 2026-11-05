@@ -96,10 +96,11 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
             top: 24,
             left: 32,
             child: Text(
-              'Streamora',
+              'STREAMORA',
               style: TextStyle(
                 fontFamily: 'Roboto',
-                fontSize: 30,
+                fontSize: 22,
+                letterSpacing: 4,
                 fontWeight: FontWeight.w600,
                 color: Color(0xff64b5f6),
               ),
@@ -111,8 +112,8 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                 final count = ids.length;
                 final size =
                     ((constraints.maxWidth - 64 - (count - 1) * 20) / count -
-                            12)
-                        .clamp(72.0, 150.0);
+                            24)
+                        .clamp(64.0, 112.0);
                 return SingleChildScrollView(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 24,
@@ -125,15 +126,30 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          managing ? 'Manage profiles' : "Who's watching?",
+                          managing ? 'Manage profiles' : 'Choose your profile',
                           style: const TextStyle(
                             fontFamily: 'Roboto',
-                            fontSize: 44,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.white,
+                            fontSize: 30,
+                            letterSpacing: .3,
+                            height: 1.2,
+                            fontWeight: FontWeight.w400,
+                            color: Color(0xfff1f4fa),
                           ),
                         ),
-                        const SizedBox(height: 38),
+                        const SizedBox(height: 10),
+                        Text(
+                          managing
+                              ? 'PERSONALIZE YOUR EXPERIENCE'
+                              : 'SELECT A PROFILE TO CONTINUE',
+                          style: const TextStyle(
+                            fontFamily: 'Roboto',
+                            fontSize: 10,
+                            letterSpacing: 2.2,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xff8fa8c4),
+                          ),
+                        ),
+                        const SizedBox(height: 28),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -272,104 +288,96 @@ class _ProfileChoice extends StatelessWidget {
     required this.onKey,
   });
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onActivate,
-    child: Focus(
-      focusNode: focus,
-      onKeyEvent: (_, event) => onKey(event),
-      child: ListenableBuilder(
-        listenable: focus,
-        builder: (context, _) => SizedBox(
-          width: size + 12,
-          child: Column(
-            children: [
-              AnimatedScale(
-                scale: selected
-                    ? 1.08
-                    : focus.hasFocus
-                    ? 1.04
-                    : 1,
-                duration: const Duration(milliseconds: 170),
-                curve: Curves.easeOut,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 170),
-                  padding: const EdgeInsets.all(3),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: focus.hasFocus
-                          ? const Color(0xff64b5f6)
-                          : Colors.transparent,
-                      width: 3,
-                    ),
-                    boxShadow: focus.hasFocus
-                        ? [
-                            BoxShadow(
-                              color: const Color(
-                                0xff64b5f6,
-                              ).withValues(alpha: .15),
-                              blurRadius: 12,
-                            ),
-                          ]
-                        : [],
-                  ),
-                  child: Material(
-                    color: const Color(0xff202b3b),
-                    borderRadius: BorderRadius.circular(16),
-                    child: InkWell(
-                      canRequestFocus: false,
-                      borderRadius: BorderRadius.circular(16),
-                      onTap: onActivate,
-                      child: Stack(
-                        children: [
-                          if (avatar != null)
-                            ProfileAvatar(
-                              avatar!,
-                              size: size,
-                              roundedSquare: true,
-                            )
-                          else
-                            SizedBox.square(
-                              dimension: size,
-                              child: const Icon(
-                                Icons.add,
-                                size: 48,
-                                color: Colors.white70,
-                              ),
-                            ),
-                          if (editing && avatar != null)
-                            const Positioned(
-                              right: 8,
-                              bottom: 8,
-                              child: CircleAvatar(
-                                radius: 15,
-                                backgroundColor: Color(0xff15243b),
-                                child: Icon(
-                                  Icons.edit_outlined,
-                                  size: 18,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
+  Widget build(BuildContext context) => Focus(
+    focusNode: focus,
+    descendantsAreFocusable: false,
+    onKeyEvent: (_, event) => onKey(event),
+    child: ListenableBuilder(
+      listenable: focus,
+      builder: (context, _) => AnimatedScale(
+        scale: selected
+            ? 1.06
+            : focus.hasFocus
+            ? 1.03
+            : 1,
+        duration: const Duration(milliseconds: 170),
+        child: Semantics(
+          button: true,
+          label: name,
+          selected: focus.hasFocus,
+          child: GestureDetector(
+            onTap: onActivate,
+            child: AnimatedContainer(
+              key: ValueKey('profile-card-$id'),
+              width: size + 24,
+              duration: const Duration(milliseconds: 170),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: focus.hasFocus
+                    ? const Color(0xff26374d)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: focus.hasFocus
+                      ? const Color(0xff64b5f6)
+                      : Colors.transparent,
+                  width: 2,
                 ),
               ),
-              const SizedBox(height: 14),
-              Text(
-                name,
-                maxLines: 2,
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontSize: 22,
-                  color: focus.hasFocus ? Colors.white : Colors.white60,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Stack(
+                    children: [
+                      if (avatar != null)
+                        ProfileAvatar(avatar!, size: size, roundedSquare: true)
+                      else
+                        Container(
+                          width: size,
+                          height: size,
+                          decoration: BoxDecoration(
+                            color: const Color(0xff202b3b),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(
+                            Icons.add,
+                            size: 36,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      if (editing && avatar != null)
+                        const Positioned(
+                          right: 6,
+                          bottom: 6,
+                          child: CircleAvatar(
+                            radius: 12,
+                            backgroundColor: Color(0xff15243b),
+                            child: Icon(
+                              Icons.edit_outlined,
+                              size: 15,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    name,
+                    maxLines: 2,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'Roboto',
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: .2,
+                      color: focus.hasFocus ? Colors.white : Colors.white60,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

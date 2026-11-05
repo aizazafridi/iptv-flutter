@@ -42,8 +42,11 @@ class MediaKitEngine
   Future<void> stopVideoRecording() => _capture.stop();
 
   final Player _player;
-  MediaKitEngine({MPVLogLevel logLevel = MPVLogLevel.error})
-    : _player = Player(configuration: PlayerConfiguration(logLevel: logLevel));
+  final bool multiview;
+  MediaKitEngine({
+    MPVLogLevel logLevel = MPVLogLevel.error,
+    this.multiview = false,
+  }) : _player = Player(configuration: PlayerConfiguration(logLevel: logLevel));
   Stream<PlayerLog> get diagnosticLogs => _player.stream.log;
   late final VideoController _controller = VideoController(
     _player,
@@ -210,11 +213,11 @@ class MediaKitEngine
       // Keep live jitter buffering bounded for Fire TV memory and live latency.
       final properties = <String, String>{
         'cache': 'yes',
-        'cache-secs': '15',
+        'cache-secs': multiview ? '6' : '15',
         'cache-pause-wait': '3',
         'network-timeout': '15',
-        'demuxer-max-bytes': '${32 * 1024 * 1024}',
-        'demuxer-max-back-bytes': '${8 * 1024 * 1024}',
+        'demuxer-max-bytes': '${(multiview ? 8 : 32) * 1024 * 1024}',
+        'demuxer-max-back-bytes': '${(multiview ? 2 : 8) * 1024 * 1024}',
       };
       for (final property in properties.entries) {
         try {

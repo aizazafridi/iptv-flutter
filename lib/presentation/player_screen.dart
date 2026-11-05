@@ -1,3 +1,5 @@
+import '../application/live_zap_channels.dart';
+import 'live_channel_browser.dart' show LiveChannelBrowserSelection;
 import 'player_settings_drawer.dart';
 import 'vod_player_controls.dart';
 import 'player_drawer.dart';
@@ -162,6 +164,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       title: 'Player Settings',
       settings: true,
       builder: (_) => PlayerSettingsDrawer(
+        recording: videoRecorder?.recording ?? false,
+        onRecord: videoRecorder == null || videoRecorder!.busy
+            ? null
+            : () async {
+                final wasRecording = videoRecorder!.recording;
+                await toggleFileRecording();
+                if (videoRecorder?.recording == wasRecording) {
+                  throw const ProviderException(
+                    'Could not change recording state.',
+                  );
+                }
+              },
         autoplay: widget.episodes.isNotEmpty ? autoplayNext : null,
         rate: playbackRate,
         seekSeconds: seekSeconds,
@@ -266,6 +280,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   bool remoteKeys(KeyEvent event) {
+    if (channelPickerOpen) return false;
     if (mounted &&
         !source.isLive &&
         !vodDrawerOpen &&
@@ -389,13 +404,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (zapping || switchingChannel || widget.loadChannels == null) return;
     zapping = true;
     try {
-      final rows = await widget.loadChannels!();
+      final rows = await liveZapChannels(
+        provider: widget.provider,
+        load: widget.loadChannels!,
+        categoryId:
+            channelBrowserSelection.categoryId ??
+            (liveChannel ?? widget.item)?.categoryId,
+        groupId: channelBrowserSelection.groupId,
+      );
       if (!mounted || rows.isEmpty) return;
       final current = rows.indexWhere(
         (item) => item.id == (liveChannel ?? widget.item)?.id,
       );
+      final anchor = current < 0 ? (direction > 0 ? -1 : 0) : current;
       for (var step = 1; step <= rows.length; step++) {
-        final item = rows[(current + direction * step) % rows.length];
+        final item = rows[(anchor + direction * step) % rows.length];
+        if (item.id == (liveChannel ?? widget.item)?.id) continue;
         if (await switchLiveChannel(item)) break;
       }
     } finally {
@@ -521,7 +545,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await finishLiveRecording();
       await engine.stop();
       if (!mounted) return;
-      final route = MaterialPageRoute<void>(
+      final route = MaterialPageRoute<MultiViewResult>(
         builder: (_) => LiveMultiviewScreen(
           initialSource: source,
           initialChannel: liveChannel ?? widget.item,
@@ -531,10 +555,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
           engineFactory: widget.engineFactory,
         ),
       );
-      await Navigator.of(context).push(route);
+      final result = await Navigator.of(context).push(route);
       await route.completed;
+      if (result != null) {
+        liveSource = result.source;
+        liveChannel = result.channel;
+      }
     } catch (_) {
-      recordingMessage('Could not open split screen. Please retry.');
+      recordingMessage('Could not open Multi View. Please retry.');
     } finally {
       if (mounted) {
         setupLiveRecovery();
@@ -682,29 +710,39 @@ class _PlayerScreenState extends State<PlayerScreen> {
   PlaybackSource get source => vodSource ?? liveSource ?? widget.source;
   ContentItem? liveChannel;
   bool switchingChannel = false;
+  final channelBrowserSelection = LiveChannelBrowserSelection();
+  bool channelPickerOpen = false;
   Future<void> chooseChannel() async {
-    if (widget.loadChannels == null) return;
-    if (liveTvMode) setState(() => controlsVisible = false);
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.transparent,
-      builder: (_) => ChannelPicker(
-        liveBrowser: true,
-        title: widget.channelCategory,
-        load: widget.loadChannels!,
-        currentId: (liveChannel ?? widget.item)?.id,
-        categoryId: (liveChannel ?? widget.item)?.categoryId,
-        provider: widget.provider,
-        onSelect: switchLiveChannel,
-      ),
-    );
-    if (mounted) {
-      if (!liveTvMode) {
-        revealControls();
-      } else {
-        setState(() => controlsVisible = false);
+    if (widget.loadChannels == null || channelPickerOpen) return;
+    controlsTimer?.cancel();
+    setState(() {
+      channelPickerOpen = true;
+      if (liveTvMode) controlsVisible = false;
+    });
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.transparent,
+        builder: (_) => ChannelPicker(
+          liveBrowser: true,
+          browserSelection: channelBrowserSelection,
+          title: widget.channelCategory,
+          load: widget.loadChannels!,
+          currentId: (liveChannel ?? widget.item)?.id,
+          categoryId: (liveChannel ?? widget.item)?.categoryId,
+          provider: widget.provider,
+          onSelect: switchLiveChannel,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          channelPickerOpen = false;
+          if (liveTvMode) controlsVisible = false;
+        });
+        if (!liveTvMode) revealControls();
+        liveSurfaceFocus.requestFocus();
       }
-      liveSurfaceFocus.requestFocus();
     }
   }
 
@@ -852,7 +890,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ? saved['seek']
         : 30;
     autoplayNext = saved['autoplayNext'] == true;
-    playbackRate = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 5].contains(saved['rate'])
+    playbackRate =
+        !source.isLive &&
+            [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 5].contains(saved['rate'])
         ? (saved['rate'] as num).toDouble()
         : 1;
     if (engine is VideoDisplayEngine) {
@@ -881,6 +921,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context,
       title: 'Episodes',
       builder: (_) => PlayerEpisodeDrawer(
+        fallbackArtwork: widget.seriesArtwork ?? widget.item?.artwork,
         episodes: widget.episodes,
         current: currentEpisode,
         history: history,
@@ -1140,7 +1181,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       controlsVisible = false;
     }
     engine = widget.engineFactory?.call() ?? MediaKitEngine();
-    videoSurface = RepaintBoundary(child: engine.surface());
+    // Keep the native video widget stable, without caching it together with
+    // Flutter's overlay painting. The decoder supplies its own texture frames.
+    videoSurface = engine.surface();
     setupVideoRecorder();
     setupLiveRecovery();
     unawaited(checkCatchUp());
@@ -1730,7 +1773,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (mounted) setState(() => exitingPlayer = false);
   }
 
+  bool confirmingLiveExit = false;
+  Future<void> confirmLiveExit() async {
+    if (confirmingLiveExit ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    confirmingLiveExit = true;
+    controlsTimer?.cancel();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      // A held Fire TV Back key can also issue a platform pop after opening.
+      // Only the explicit No/Yes actions may close this confirmation.
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('Exit Live TV?'),
+          content: const Text('Are you sure you want to exit Live TV?'),
+          actions: [
+            TextButton(
+              autofocus: true,
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Yes'),
+            ),
+          ],
+        ),
+      ),
+    );
+    confirmingLiveExit = false;
+    if (mounted && confirmed == true) {
+      await exitPlayer();
+    } else if (mounted) {
+      liveSurfaceFocus.requestFocus();
+    }
+  }
+
   void handlePlayerBack() {
+    if (!mounted ||
+        confirmingLiveExit ||
+        exitingPlayer ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
     if (!source.isLive && dragPosition != null) {
       hiddenSeekTimer?.cancel();
       setState(() {
@@ -1754,7 +1844,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       setState(() => controlsVisible = false);
       if (source.isLive) liveSurfaceFocus.requestFocus();
     } else if (liveTvMode && source.isLive) {
-      unawaited(exitPlayer());
+      unawaited(confirmLiveExit());
     } else {
       unawaited(exitPlayer());
     }
@@ -1763,7 +1853,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool liveMuted = false;
 
   void revealControls() {
-    if (guideVisible) return;
+    if (guideVisible || channelPickerOpen) return;
     controlsTimer?.cancel();
     if (!controlsVisible) setState(() => controlsVisible = true);
     if (!source.isLive && (vodDrawerOpen || !playing || dragPosition != null)) {
@@ -1846,7 +1936,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       },
       child: Focus(
         focusNode: liveSurfaceFocus,
-        canRequestFocus: source.isLive,
+        canRequestFocus: source.isLive && !channelPickerOpen,
+        descendantsAreFocusable: !channelPickerOpen,
+        descendantsAreTraversable: !channelPickerOpen,
         child: Scaffold(
           backgroundColor: const Color(0xff090b13),
           appBar: fullscreen || !controlsVisible || guideVisible
@@ -1953,10 +2045,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 ),
                                 const SizedBox(height: 16),
                                 Text(
-                                  reconnectingLive
-                                      ? 'Reconnecting channel...'
+                                  source.isLive
+                                      ? 'Connecting...'
                                       : starting
-                                      ? 'Loading ${source.isLive ? "channel" : "video"}...'
+                                      ? 'Loading video...'
                                       : 'Buffering...',
                                   style: const TextStyle(color: Colors.white),
                                 ),
@@ -2342,7 +2434,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                 widget.resolveChannel != null &&
                                                 engine is AudioPlaybackEngine)
                                               IconButton(
-                                                tooltip: 'Split screen',
+                                                tooltip: 'Multi View',
                                                 icon: const Icon(
                                                   Icons.splitscreen_outlined,
                                                 ),

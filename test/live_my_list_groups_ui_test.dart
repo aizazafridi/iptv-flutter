@@ -55,7 +55,7 @@ void main() {
       await tester.tap(find.text('Choose groups'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Sports'));
-      await tester.tap(find.text('Save Changes'));
+      await tester.tap(find.text('Save to My List'));
       await tester.pumpAndSettle();
       expect(groups.memberships('3'), {sports});
       expect(find.byType(DropdownButtonFormField<String>), findsNothing);
@@ -108,9 +108,11 @@ void main() {
       expect(groups.groups.single.name, 'News');
       await tester.tap(find.byTooltip('Manage groups'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete News'));
+      await tester.tap(find.text('News').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Delete'));
+      await tester.tap(find.text('Delete Group'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete Group'));
       await tester.pumpAndSettle();
       expect(groups.groups, isEmpty);
       await tester.tap(find.text('Done'));
@@ -121,4 +123,64 @@ void main() {
       provider.dispose();
     },
   );
+  testWidgets('remote Move Mode cancels then commits channel ordering', (
+    tester,
+  ) async {
+    final provider = CatalogFixture();
+    final list = MyList.forProvider(provider);
+    final groups = list.groups;
+    final id = await groups.create('Sports');
+    for (final c in channels) {
+      await list.saveLiveMembership(c, {id}, general: true);
+    }
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LiveMyListPanel(
+            provider: provider,
+            onPlay: (_) {},
+            onGroupChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Manage groups'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Sports').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reorder Channels'));
+    await tester.pumpAndSettle();
+    final original = groups
+        .channels(id, await list.items(channels.first.type))
+        .map((c) => c.id)
+        .toList();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(
+      groups
+          .channels(id, await list.items(channels.first.type))
+          .map((c) => c.id),
+      original,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    final expected = [...original];
+    final first = expected.removeAt(0);
+    expected.insert(1, first);
+    expect(
+      groups
+          .channels(id, await list.items(channels.first.type))
+          .map((c) => c.id),
+      expected,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    provider.dispose();
+  });
 }

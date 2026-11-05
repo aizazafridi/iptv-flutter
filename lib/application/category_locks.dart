@@ -74,12 +74,19 @@ class CategoryLocks extends ChangeNotifier {
   bool titleConfigured(ContentItem item) => _titles.contains(titleKey(item));
   bool titleLocked(ContentItem item) =>
       titleConfigured(item) && !_unlockedTitles.contains(titleKey(item));
-  bool hidden(Category category) => _hidden.contains(key(category));
+  bool isRecordings(Category category) =>
+      category.id == '__streamora_recordings__';
+  bool hidden(Category category) => isRecordings(category)
+      ? _hidden.any((value) => value.endsWith(':__streamora_recordings__'))
+      : _hidden.contains(key(category));
   final Set<String> _unlocked = {};
   Future<void>? _loading;
   bool get hasPassword => _password.isNotEmpty;
-  String key(Category category) => '${category.type.name}:${category.id}';
-  bool configured(Category category) => _locked.contains(key(category));
+  String key(Category category) =>
+      '${isRecordings(category) ? 'live' : category.type.name}:${category.id}';
+  bool configured(Category category) => isRecordings(category)
+      ? _locked.any((value) => value.endsWith(':__streamora_recordings__'))
+      : _locked.contains(key(category));
   bool isLocked(Category category) =>
       configured(category) && !_unlocked.contains(key(category));
   bool hasLocks(ContentType type) =>
@@ -150,6 +157,11 @@ class CategoryLocks extends ChangeNotifier {
       throw const ProviderException('Incorrect lock password.');
     }
     final updated = Set<String>.from(_locked);
+    if (isRecordings(category)) {
+      updated.removeWhere(
+        (value) => value.endsWith(':__streamora_recordings__'),
+      );
+    }
     if (locked) {
       updated.add(key(category));
     } else {
@@ -234,6 +246,11 @@ class CategoryLocks extends ChangeNotifier {
   Future<void> setHidden(Category category, bool value) async {
     await load();
     final previous = Set<String>.of(_hidden);
+    if (isRecordings(category)) {
+      _hidden.removeWhere(
+        (entry) => entry.endsWith(':__streamora_recordings__'),
+      );
+    }
     if (value) {
       _hidden.add(key(category));
     } else {
@@ -248,10 +265,19 @@ class CategoryLocks extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<List<ContentItem>> visibleItems(List<ContentItem> items) async {
+  Future<List<ContentItem>> visibleItems(
+    List<ContentItem> items, {
+    bool excludeConfiguredLocks = false,
+  }) async {
     await load();
     return items.where((item) {
       if (!allowsItem(item) || titleHidden(item)) return false;
+      if (excludeConfiguredLocks &&
+          (titleConfigured(item) ||
+              (item.categoryId != null &&
+                  configured(Category(item.categoryId!, '', item.type))))) {
+        return false;
+      }
       if (item.categoryId != null &&
           hidden(Category(item.categoryId!, '', item.type))) {
         return false;

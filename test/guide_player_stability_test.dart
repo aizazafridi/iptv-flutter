@@ -50,7 +50,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       final before = engine.builds;
-      await tester.binding.handlePopRoute();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
       await tester.tap(find.text('TV Guide'));
       await tester.pumpAndSettle();

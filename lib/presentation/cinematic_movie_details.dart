@@ -1,10 +1,12 @@
-import 'artwork_prefetch.dart';
+import 'artwork_retry.dart';
+import 'details_title.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import '../data/tmdb_artwork_service.dart';
 import '../data/omdb_ratings_service.dart';
 import 'dart:async';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../data/tmdb_cast_service.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -78,50 +80,67 @@ class CinematicMovieDetails extends StatefulWidget {
 
 class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
   final playFocus = FocusNode(debugLabel: 'movie primary action');
+  final pageScroll = ScrollController();
   final castFocus = FocusNode(debugLabel: 'movie cast');
   final similarFocus = FocusNode(debugLabel: 'movie similar');
   late final Future<List<ContentItem>> related = loadRelated();
   List<ContentItem> relatedItems = [];
   List<MovieCredit> loadedCast = [];
   MovieRatings loadedRatings = const MovieRatings();
-  Uri? titleLogo;
+  Uri? titleLogo, recoveredBackdrop;
+  Future<Uri?>? backdropRecovery;
+  Future<Uri?> recoverBackdrop() => backdropRecovery ??= retryArtwork<Uri?>(
+    scope: artworkRetries,
+    load: () => (widget.artworkService ?? TmdbArtworkService.configured)
+        .detailsBackdrop(info),
+    usable: (value) => value != null,
+    active: () => mounted,
+  );
+  final artworkRetries = ArtworkRetryScope();
   @override
   void initState() {
     super.initState();
     unawaited(loadCast());
     unawaited(loadRatings());
     unawaited(loadLogo());
+    if (info.backdrop == null) {
+      unawaited(
+        recoverBackdrop().then((value) {
+          if (mounted && value != null) {
+            setState(() => recoveredBackdrop = value);
+          }
+        }),
+      );
+    }
   }
 
   Future<void> loadLogo() async {
-    final logo = await (widget.artworkService ?? TmdbArtworkService.configured)
-        .titleLogo(info);
+    final logo = await retryArtwork<Uri?>(
+      scope: artworkRetries,
+      load: () => (widget.artworkService ?? TmdbArtworkService.configured)
+          .titleLogo(info),
+      usable: (value) => value != null,
+      active: () => mounted,
+    );
     if (mounted && logo != null) setState(() => titleLogo = logo);
   }
 
   Widget movieTitle(double scale) {
-    final fallback = Text(
+    final fallback = DetailsTitle(
       movieDisplayTitle(info.item.name),
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        fontSize: 46 * scale,
-        height: 1.12,
-        fontWeight: FontWeight.w500,
-        color: Colors.white,
-      ),
+      fontSize: 46 * scale,
     );
     if (titleLogo == null) return fallback;
     return Semantics(
       label: movieDisplayTitle(info.item.name),
       image: true,
-      child: CachedNetworkImage(
+      child: SharedArtworkImage(
         imageUrl: titleLogo.toString(),
+        kind: ArtworkKind.logo,
         width: 360 * scale,
         height: 88 * scale,
         fit: BoxFit.contain,
         alignment: Alignment.centerLeft,
-        memCacheWidth: 720,
         placeholder: (_, _) => fallback,
         errorWidget: (_, _, _) => fallback,
       ),
@@ -183,15 +202,14 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
   }
 
   Future<void> loadCast() async {
-    final people = await (widget.castService ?? TmdbCastService.configured)
-        .credits(info);
-    if (mounted && people.isNotEmpty) {
-      ArtworkPrefetch.images(
-        context,
-        people.map((person) => person.photo),
-        width: 252,
-        limit: 6,
-      );
+    final people = await retryArtwork<List<MovieCredit>>(
+      scope: artworkRetries,
+      load: () =>
+          (widget.castService ?? TmdbCastService.configured).credits(info),
+      usable: (value) => value.isNotEmpty,
+      active: () => mounted,
+    );
+    if (mounted && people != null && people.isNotEmpty) {
       setState(() => loadedCast = people);
     }
   }
@@ -232,6 +250,8 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
 
   @override
   void dispose() {
+    artworkRetries.dispose();
+    pageScroll.dispose();
     for (final node in [playFocus, castFocus, similarFocus]) {
       node.dispose();
     }
@@ -240,13 +260,25 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
 
   void focusSection(FocusNode node) {
     node.requestFocus();
+    if (node == playFocus) {
+      if (pageScroll.hasClients) {
+        unawaited(
+          pageScroll.animateTo(
+            0,
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeOutCubic,
+          ),
+        );
+      }
+      return;
+    }
     final target = node.context;
     if (target != null) {
       Scrollable.ensureVisible(
         target,
         alignment: .3,
-        duration: const Duration(milliseconds: 170),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
       );
     }
   }
@@ -396,7 +428,8 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
     final remaining = resume
         ? ((saved.duration - saved.position).inSeconds / 60).ceil()
         : 0;
-    final image = info.backdrop ?? info.artwork ?? info.item.artwork;
+    final image =
+        recoveredBackdrop ?? info.backdrop ?? info.artwork ?? info.item.artwork;
     final people = loadedCast.isNotEmpty
         ? loadedCast
         : [
@@ -409,7 +442,7 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
       data: Theme.of(context).copyWith(
         textButtonTheme: TextButtonThemeData(
           style: ButtonStyle(
-            animationDuration: const Duration(milliseconds: 170),
+            animationDuration: const Duration(milliseconds: 240),
             overlayColor: WidgetStateProperty.resolveWith(
               (states) => states.contains(WidgetState.focused)
                   ? const Color(0x66529cff)
@@ -419,7 +452,7 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
         ),
         filledButtonTheme: FilledButtonThemeData(
           style: ButtonStyle(
-            animationDuration: const Duration(milliseconds: 170),
+            animationDuration: const Duration(milliseconds: 240),
             overlayColor: const WidgetStatePropertyAll(Color(0x33529cff)),
             side: WidgetStateProperty.resolveWith(
               (states) => BorderSide(
@@ -443,12 +476,22 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
                 right: 0,
                 width: width * .76,
                 height: height * .86,
-                child: CachedNetworkImage(
+                child: SharedArtworkImage(
+                  kind: ArtworkKind.backdrop,
                   imageUrl: image.toString(),
                   fit: BoxFit.cover,
                   alignment: Alignment.topRight,
-                  memCacheWidth: 1920,
-                  errorWidget: (_, _, _) => const SizedBox.shrink(),
+                  errorWidget: (_, _, _) => FutureBuilder<Uri?>(
+                    future: recoverBackdrop(),
+                    builder: (context, snapshot) => snapshot.data == null
+                        ? const SizedBox.shrink()
+                        : SharedArtworkImage(
+                            kind: ArtworkKind.backdrop,
+                            imageUrl: snapshot.data.toString(),
+                            fit: BoxFit.cover,
+                            alignment: Alignment.topRight,
+                          ),
+                  ),
                 ),
               ),
             Positioned.fill(
@@ -479,6 +522,7 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
             ),
             SingleChildScrollView(
               key: const PageStorageKey('cinematic-movie-scroll'),
+              controller: pageScroll,
               padding: EdgeInsets.fromLTRB(width * .045, 56, width * .045, 40),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -563,8 +607,11 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
                             ),
                           ),
                           Focus(
-                            onKeyEvent: (_, event) =>
-                                vertical(event, () {}, belowActions),
+                            onKeyEvent: (_, event) => vertical(
+                              event,
+                              () => focusSection(playFocus),
+                              belowActions,
+                            ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -593,7 +640,14 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
                                           foregroundColor: const Color(
                                             0xff090b10,
                                           ),
-                                          minimumSize: Size(220 * scale, 42),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 8,
+                                          ),
+                                          fixedSize: Size(
+                                            (220 * scale).clamp(180, 220),
+                                            42,
+                                          ),
                                           textStyle: TextStyle(
                                             fontSize: 19 * scale,
                                             fontWeight: FontWeight.w500,
@@ -863,8 +917,8 @@ class CastCreditCard extends StatelessWidget {
           : KeyEventResult.ignored,
       child: Builder(
         builder: (context) => AnimatedContainer(
-          duration: const Duration(milliseconds: 170),
-          curve: Curves.easeOut,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: Focus.of(context).hasFocus
@@ -896,12 +950,11 @@ class CastCreditCard extends StatelessWidget {
                               size: 36,
                             ),
                           )
-                        : CachedNetworkImage(
+                        : SharedArtworkImage(
                             imageUrl: credit.photo.toString(),
+                            kind: ArtworkKind.cast,
                             fit: BoxFit.cover,
                             alignment: const Alignment(0, -0.6),
-                            memCacheWidth: 252,
-                            maxWidthDiskCache: 252,
                             placeholder: (_, _) =>
                                 const ColoredBox(color: Color(0xff202733)),
                             errorWidget: (_, _, _) => const Icon(

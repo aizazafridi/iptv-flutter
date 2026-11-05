@@ -1,4 +1,5 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import '../data/artwork_repository.dart';
+import 'shared_artwork_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../domain/models.dart';
@@ -133,17 +134,14 @@ class Artwork extends StatelessWidget {
           !fallback && fallbackUri != null && fallbackUri != source
           ? image(fallbackUri!, fallback: true)
           : placeholder();
-      return Image.network(
-        source.toString(),
-        cacheWidth: 480,
+      return SharedArtworkImage(
+        kind: ArtworkKind.episode,
+        imageUrl: source.toString(),
         width: width,
         height: height,
         fit: BoxFit.cover,
-        // A stalled thumbnail request may never reach errorBuilder. Keep the
-        // series poster visible until the episode image has a decoded frame.
-        frameBuilder: (_, child, frame, synchronous) =>
-            synchronous || frame != null ? child : alternative(),
-        errorBuilder: (_, _, _) => alternative(),
+        placeholder: (_, _) => placeholder(),
+        errorWidget: (_, _, _) => alternative(),
       );
     }
 
@@ -171,13 +169,10 @@ class ChannelLogo extends StatelessWidget {
       ),
       child: uri == null
           ? const Icon(Icons.live_tv_rounded, size: 28)
-          : CachedNetworkImage(
+          : SharedArtworkImage(
+              kind: ArtworkKind.poster,
               imageUrl: uri.toString(),
               fit: BoxFit.contain,
-              memCacheWidth: 128,
-              memCacheHeight: 128,
-              maxWidthDiskCache: 128,
-              maxHeightDiskCache: 128,
               errorWidget: (_, _, _) =>
                   const Icon(Icons.live_tv_rounded, size: 28),
             ),
@@ -246,7 +241,7 @@ class _FocusCardState extends State<FocusCard> {
       // Derive styling from current focus, not a flag retained by a reused tile.
       final focused = cardFocus.hasPrimaryFocus;
       return AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
+        duration: const Duration(milliseconds: 240),
         margin: const EdgeInsets.all(4),
         padding: EdgeInsets.all(widget.stableSize && !focused ? 2 : 0),
         decoration: BoxDecoration(
@@ -277,7 +272,7 @@ class _FocusCardState extends State<FocusCard> {
                     if (mounted) {
                       Scrollable.ensureVisible(
                         context,
-                        duration: const Duration(milliseconds: 120),
+                        duration: const Duration(milliseconds: 240),
                         alignment: 0.5,
                       );
                     }

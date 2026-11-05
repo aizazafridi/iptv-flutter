@@ -10,5 +10,5 @@ List<ContentItem> recentlyAdded(List<ContentItem> catalog) {
     final date = b.addedAt!.compareTo(a.addedAt!);
     return date == 0 ? a.id.compareTo(b.id) : date;
   });
-  return items.take(50).toList();
+  return items.take(25).toList();
 }

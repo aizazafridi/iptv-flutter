@@ -3,7 +3,12 @@ import '../domain/models.dart';
 import '../application/category_locks.dart';
 
 /// Enforces locks in the API boundary, including search and playback entry points.
-class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
+class LockedProvider
+    implements IptvProvider, EpgProvider, CatchUpProvider, StreamLimitProvider {
+  @override
+  int? get maxConcurrentStreams => delegate is StreamLimitProvider
+      ? (delegate as StreamLimitProvider).maxConcurrentStreams
+      : null;
   final IptvProvider delegate;
   final CategoryLocks locks;
   final Map<ContentType, Future<List<ContentItem>>> _catalogs = {};
@@ -47,7 +52,10 @@ class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
   @override
   Future<List<ContentItem>> getAllItems(ContentType type) async =>
       locks.visibleItems(await delegate.getAllItems(type));
-  Future<List<ContentItem>> visibleSavedItems(List<ContentItem> items) async {
+  Future<List<ContentItem>> visibleSavedItems(
+    List<ContentItem> items, {
+    bool excludeConfiguredLocks = false,
+  }) async {
     await locks.load();
     final resolved = <ContentItem>[];
     for (final item in items) {
@@ -80,7 +88,10 @@ class LockedProvider implements IptvProvider, EpgProvider, CatchUpProvider {
         ),
       );
     }
-    return locks.visibleItems(resolved);
+    return locks.visibleItems(
+      resolved,
+      excludeConfiguredLocks: excludeConfiguredLocks,
+    );
   }
 
   Future<void> _checkItem(ContentItem item) async {

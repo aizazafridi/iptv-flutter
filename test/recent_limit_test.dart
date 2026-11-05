@@ -3,7 +3,7 @@ import 'package:iptv_flutter/application/recent_items.dart';
 import 'package:iptv_flutter/domain/models.dart';
 
 void main() {
-  test('recent movies and series contain only the 50 newest titles', () {
+  test('recent movies and series contain only the 25 newest titles', () {
     for (final type in [ContentType.movies, ContentType.series]) {
       final rows = recentlyAdded(
         List.generate(
@@ -16,9 +16,9 @@ void main() {
           ),
         ),
       );
-      expect(rows.length, 50);
+      expect(rows.length, 25);
       expect(rows.first.id, '79');
-      expect(rows.last.id, '30');
+      expect(rows.last.id, '55');
     }
   });
 }
