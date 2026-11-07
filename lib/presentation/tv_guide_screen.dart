@@ -57,6 +57,7 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
     () => FocusNode(debugLabel: 'guide channel $id'),
   );
   void focusCategory() {
+    channelFocusVersion++;
     final id = categoryId ?? '';
     final node = categoryNode(id);
     if (node.context != null) {
@@ -80,21 +81,74 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
+  void moveCategory(String id, int delta) {
+    final ids = ['', ...categories.map((c) => c.id)];
+    final index = (ids.indexOf(id) + delta).clamp(0, ids.length - 1);
+    final node = categoryNode(ids[index]);
+    if (node.context != null) {
+      node.requestFocus();
+      return;
+    }
+    if (categoryScroll.hasClients) {
+      categoryScroll.jumpTo(
+        (index * 150.0).clamp(0, categoryScroll.position.maxScrollExtent),
+      );
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) node.requestFocus();
+    });
+  }
+
+  int channelFocusVersion = 0;
+  String? focusedChannelId;
   void focusChannel([int index = 0]) {
     if (displayed.isEmpty) {
       focusCategory();
       return;
     }
-    final target = index.clamp(0, displayed.length - 1);
+    final targetIndex = index.clamp(0, displayed.length - 1);
+    final id = displayed[targetIndex].id;
+    final version = ++channelFocusVersion;
     if (vertical.hasClients) {
-      vertical.jumpTo(
-        (target * 52.0).clamp(0, vertical.position.maxScrollExtent),
-      );
+      final start = targetIndex * 52.0;
+      final position = vertical.position;
+      final target = start < position.pixels
+          ? start
+          : start + 52 > position.pixels + position.viewportDimension
+          ? start + 52 - position.viewportDimension
+          : position.pixels;
+      if ((target - position.pixels).abs() > .5) {
+        vertical.jumpTo(target.clamp(0, position.maxScrollExtent));
+      }
     }
-    channelNode(displayed[target].id).requestFocus();
+    final node = channelNode(id);
+    if (node.context != null) node.requestFocus();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) channelNode(displayed[target].id).requestFocus();
+      if (mounted &&
+          version == channelFocusVersion &&
+          displayed.any((c) => c.id == id)) {
+        channelNode(id).requestFocus();
+      }
     });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<void> channelFocused(ContentItem item) async {
+    focusedChannelId = item.id;
+    try {
+      final entries = await schedule(item);
+      if (!mounted ||
+          focusedChannelId != item.id ||
+          !channelNode(item.id).hasFocus) {
+        return;
+      }
+      final programme =
+          entries.where((p) => p.isCurrent(DateTime.now())).firstOrNull ??
+          entries.firstOrNull;
+      selection.value = programme == null ? null : (item, programme);
+    } catch (_) {
+      if (mounted && focusedChannelId == item.id) selection.value = null;
+    }
   }
 
   KeyEventResult navigate(KeyEvent event, VoidCallback up, VoidCallback down) {
@@ -439,6 +493,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
             child: InkWell(
               key: ValueKey('guide-channel:${item.id}'),
               focusNode: channelNode(item.id),
+              onFocusChange: (focused) {
+                if (focused) unawaited(channelFocused(item));
+              },
               focusColor: const Color(0xff365777),
               onTap: () {
                 unawaited(activateChannel(item));
@@ -688,21 +745,58 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                                       }
                                     }
                                   },
-                                  onKeyEvent: (_, event) => navigate(
-                                    event,
-                                    () => searchFocus.requestFocus(),
-                                    () => focusChannel(),
-                                  ),
+                                  canRequestFocus: false,
+                                  onKeyEvent: (_, event) {
+                                    if (event is KeyDownEvent ||
+                                        event is KeyRepeatEvent) {
+                                      if (event.logicalKey ==
+                                              LogicalKeyboardKey.arrowLeft ||
+                                          event.logicalKey ==
+                                              LogicalKeyboardKey.arrowRight) {
+                                        moveCategory(
+                                          category.id,
+                                          event.logicalKey ==
+                                                  LogicalKeyboardKey.arrowRight
+                                              ? 1
+                                              : -1,
+                                        );
+                                        return KeyEventResult.handled;
+                                      }
+                                    }
+                                    return navigate(
+                                      event,
+                                      () => searchFocus.requestFocus(),
+                                      () => focusChannel(),
+                                    );
+                                  },
                                   child: TextButton(
                                     focusNode: categoryNode(category.id),
-                                    style: TextButton.styleFrom(
-                                      foregroundColor: Colors.white,
-                                      backgroundColor:
-                                          (categoryId ?? '') == category.id
-                                          ? const Color(0xff29466a)
-                                          : null,
-                                      textStyle: const TextStyle(fontSize: 12),
-                                    ),
+                                    style:
+                                        TextButton.styleFrom(
+                                          side: const BorderSide(
+                                            color: Colors.transparent,
+                                          ),
+                                          foregroundColor: Colors.white,
+                                          backgroundColor:
+                                              (categoryId ?? '') == category.id
+                                              ? const Color(0xff29466a)
+                                              : null,
+                                          textStyle: const TextStyle(
+                                            fontSize: 12,
+                                          ),
+                                        ).copyWith(
+                                          side: WidgetStateProperty.resolveWith(
+                                            (states) => BorderSide(
+                                              color:
+                                                  states.contains(
+                                                    WidgetState.focused,
+                                                  )
+                                                  ? const Color(0xff64b5f6)
+                                                  : Colors.transparent,
+                                              width: 2,
+                                            ),
+                                          ),
+                                        ),
                                     onPressed: () => setState(() {
                                       categoryId = category.id.isEmpty
                                           ? null
@@ -811,7 +905,9 @@ class _TvGuideScreenState extends State<TvGuideScreen> {
                             );
                           }
                           return ListView.builder(
-                            scrollCacheExtent: const ScrollCacheExtent.pixels(0),
+                            scrollCacheExtent: const ScrollCacheExtent.pixels(
+                              0,
+                            ),
                             controller: vertical,
                             itemExtent: 52,
                             itemCount: visible.length,

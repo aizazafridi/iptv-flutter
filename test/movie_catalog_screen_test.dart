@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:iptv_flutter/application/appearance.dart';
 import 'package:iptv_flutter/application/session.dart';
 import 'package:iptv_flutter/application/provider_registry.dart';
@@ -57,6 +58,82 @@ class MovieProvider extends CatalogProvider {
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+  testWidgets(
+    'Movies keep stable cards and update the pinned featured panel on remote focus',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final provider = MovieProvider();
+      final key = GlobalKey<SeriesCatalogScreenState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SeriesCatalogScreen(
+              key: key,
+              provider: provider,
+              type: ContentType.movies,
+              onNavigation: () {},
+              onSettings: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      unawaited(key.currentState!.focusRow(0));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('floating-poster-preview')),
+        findsNothing,
+      );
+      expect(find.text('Movie synopsis'), findsOneWidget);
+      final first = key.currentState!.featured!.id;
+      final card = find
+          .ancestor(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is TextButton &&
+                  widget.focusNode?.hasPrimaryFocus == true,
+            ),
+            matching: find.byType(SeriesPosterCard),
+          )
+          .first;
+      final cardSize = tester.getSize(card);
+      final before = FocusManager.instance.primaryFocus;
+      final heroTop = tester.getTopLeft(
+        find.byKey(const ValueKey('series-featured-hero')),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+      expect(FocusManager.instance.primaryFocus, isNot(same(before)));
+      expect(key.currentState!.featured!.id, isNot(first));
+      expect(tester.getSize(card), cardSize);
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('series-featured-hero'))),
+        heroTop,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('series-featured-hero'))),
+        heroTop,
+      );
+      expect(key.currentState!.handleBack(), isFalse);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('floating-poster-preview')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      provider.dispose();
+    },
+  );
   testWidgets('dashboard Movies opens the new catalog and Back restores Home', (
     tester,
   ) async {
@@ -248,12 +325,12 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Resume'), findsOneWidget);
+      expect(find.text('Resume'), findsNothing);
       expect(key.currentState!.featured!.id, items[0].id);
       await tester.pump(const Duration(seconds: 15));
       await tester.pumpAndSettle();
       expect(key.currentState!.featured!.id, items[1].id);
-      expect(find.text('Resume'), findsOneWidget);
+      expect(find.text('Resume'), findsNothing);
       await tester.tap(find.text('All Movies').last);
       await tester.pumpAndSettle();
       expect(provider.allCalls, 1);

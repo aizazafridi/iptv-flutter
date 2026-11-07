@@ -447,10 +447,7 @@ class _LiveTvControlsState extends State<LiveTvControls> {
                   ),
                   action(
                     widget.recording ? 'Stop recording' : 'Record',
-                    const Icon(
-                      Icons.radio_button_checked,
-                      color: Colors.redAccent,
-                    ),
+                    const Icon(Icons.radio_button_checked, color: Colors.white),
                     widget.onRecord,
                   ),
                   action(

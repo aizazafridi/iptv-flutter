@@ -23,6 +23,9 @@ class Session extends ChangeNotifier {
   List<AccountProfile> profiles = [];
   bool loading = true;
   double? loadingProgress;
+  bool profileLoaded = false;
+  bool historyLoaded = false;
+  bool contentPrepared = false;
   String loadingMessage = 'Loading';
   String? error;
   ProviderConfig? lastConfig;
@@ -127,6 +130,7 @@ class Session extends ChangeNotifier {
     }
     loading = true;
     loadingProgress = 0;
+    profileLoaded = historyLoaded = contentPrepared = false;
     loadingMessage = 'Loading';
     error = null;
     _notify();
@@ -181,6 +185,12 @@ class Session extends ChangeNotifier {
         key: 'last_selected_profile',
         value: profile.id,
       );
+      profileLoaded = true;
+      loadingProgress = 0.3;
+      _notify();
+      await WatchHistory.forProvider(candidate).entries();
+      historyLoaded = true;
+      _notify();
       final types = [
         ContentType.movies,
         ContentType.series,
@@ -228,6 +238,7 @@ class Session extends ChangeNotifier {
       );
       if (_disposed) return;
       await warmProfileArtwork(firstArtwork);
+      contentPrepared = true;
       loadingProgress = 1;
       _notify();
     } on ProviderException catch (exception) {

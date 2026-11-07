@@ -490,7 +490,7 @@ class XtreamProvider
       result.add(
         EpgProgramme(
           archiveStart: _archiveStart(value['start']),
-          title: _epgText(value['title']),
+          title: _epgTitle(value),
           description: _epgText(value['description']),
           start: start,
           end: end,
@@ -499,6 +499,19 @@ class XtreamProvider
     }
     result.sort((a, b) => a.start.compareTo(b.start));
     return result;
+  }
+
+  String _epgTitle(Map<String, dynamic> row) {
+    final title = _epgText(row['title']);
+    final description = _epgText(row['description']);
+    // Known upstream title contamination; only correct this exact ARY entry
+    // when its synopsis explicitly identifies the programme.
+    if (row['channel_id'] == 'arydigital.pk' &&
+        title == 'Príomhscéalta na Nuachta agus na Gaeltachta' &&
+        description.startsWith('Dar-e-Nijaat is a drama')) {
+      return 'Dar-e-Nijaat';
+    }
+    return title;
   }
 
   String _epgText(dynamic value) {

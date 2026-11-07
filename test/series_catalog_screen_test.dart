@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:iptv_flutter/presentation/activation_text_field.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -170,12 +171,12 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       await tester.pumpAndSettle();
       expect(key.currentState!.featured!.id, items[1].id);
-      expect(find.text('Resume S1 E2'), findsOneWidget);
+      expect(find.text('Resume S1 E2'), findsNothing);
       expect(FocusManager.instance.primaryFocus, same(focus));
       await tester.pump(const Duration(seconds: 15));
       await tester.pumpAndSettle();
       expect(key.currentState!.featured!.id, items[2].id);
-      expect(find.text('Resume S1 E3'), findsOneWidget);
+      expect(find.text('Resume S1 E3'), findsNothing);
       await tester.pump(const Duration(seconds: 15));
       await tester.pumpAndSettle();
       expect(key.currentState!.featured!.id, items[0].id);
@@ -183,6 +184,56 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets('Series fixed cards update the pinned hero and retain focus', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final provider = CatalogProvider();
+    final key = await mount(tester, provider);
+    unawaited(key.currentState!.focusRow(0));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    final first = key.currentState!.featured!.id;
+    final firstNode = FocusManager.instance.primaryFocus;
+    final card = find
+        .byWidgetPredicate(
+          (widget) => widget is SeriesPosterCard && widget.item.id == first,
+        )
+        .first;
+    final size = tester.getSize(card);
+    final hero = find.byKey(const ValueKey('series-featured-hero'));
+    final top = tester.getTopLeft(hero);
+    expect(focused(tester).inlineExpansion, isFalse);
+    expect(
+      find.descendant(of: hero, matching: find.byType(FilledButton)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: hero, matching: find.text('Details')),
+      findsNothing,
+    );
+    await press(tester, LogicalKeyboardKey.arrowRight);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(key.currentState!.featured!.id, isNot(first));
+    expect(FocusManager.instance.primaryFocus, isNot(same(firstNode)));
+    expect(tester.getSize(card), size);
+    expect(tester.getTopLeft(hero), top);
+    final selected = key.currentState!.featured!.id;
+    await tester.pump(const Duration(seconds: 15));
+    expect(key.currentState!.featured!.id, selected);
+    await press(tester, LogicalKeyboardKey.arrowDown);
+    expect(tester.getTopLeft(hero), top);
+    await press(tester, LogicalKeyboardKey.arrowUp);
+    expect(focused(tester).item.id, first);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    provider.dispose();
+  });
   for (final size in [
     const Size(960, 540),
     const Size(1280, 720),
@@ -373,7 +424,8 @@ void main() {
       );
       expect(key.currentState!.handleBack(), isTrue);
       await tester.pumpAndSettle();
-      expect(find.text('Watch Now'), findsOneWidget);
+      expect(find.text('Watch Now'), findsNothing);
+      expect(find.text('Details'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -527,7 +579,8 @@ void main() {
     expect(find.text('Continue Watching'), findsOneWidget);
     await mount(tester, second);
     expect(find.text('Continue Watching'), findsNothing);
-    expect(find.text('Watch Now'), findsOneWidget);
+    expect(find.text('Watch Now'), findsNothing);
+    expect(find.text('Details'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

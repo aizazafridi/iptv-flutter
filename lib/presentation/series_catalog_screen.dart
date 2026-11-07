@@ -1,3 +1,4 @@
+import 'poster_focus_preview.dart';
 import 'artwork_retry.dart';
 import '../data/locked_provider.dart';
 import '../data/artwork_repository.dart';
@@ -58,6 +59,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   List<ContentItem> savedTitles = [];
   int savedRevision = 0;
   late final locks = CategoryLocks.forProvider(widget.provider);
+  final posterPreview = PosterPreviewController();
   final page = ScrollController();
   final gridScroll = ScrollController();
   final gridSelected = FocusNode(debugLabel: 'catalog restored title');
@@ -67,7 +69,6 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   final categoriesFocus = FocusNode(debugLabel: 'catalog categories');
   final searchFocus = FocusNode(debugLabel: 'series catalog search');
   final detailsFocus = FocusNode(debugLabel: 'series featured details');
-  final watchFocus = FocusNode(debugLabel: 'series featured watch');
   final gridSearch = FocusNode(debugLabel: 'series grid search');
   final gridSortMenu = GlobalKey<PopupMenuButtonState<String>>();
   final gridSort = FocusNode(debugLabel: 'catalog grid sort');
@@ -84,6 +85,19 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   List<WatchEntry> watching = [];
   ContentItem? featured;
   Timer? featuredTimer;
+  Timer? featuredFocusTimer;
+
+  void focusTitle(ContentItem item) {
+    selectedTitle = item.id;
+    if (BrowsingModeSettings.instance.lite) return;
+    featuredFocusTimer?.cancel();
+    featuredFocusTimer = Timer(const Duration(milliseconds: 180), () {
+      if (mounted && selectedTitle == item.id && featured?.id != item.id) {
+        setState(() => featured = item);
+      }
+    });
+  }
+
   bool loading = true, failed = false, grid = false;
   String? filter;
   String liteSection = 'all';
@@ -115,6 +129,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     featuredTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted ||
           loading ||
+          (selectedTitle != null) ||
           BrowsingModeSettings.instance.lite ||
           grid ||
           watching.length < 2 ||
@@ -131,6 +146,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
 
   @override
   void dispose() {
+    featuredFocusTimer?.cancel();
+    posterPreview.dispose();
     liteSearchDelay?.cancel();
     BrowsingModeSettings.instance.removeListener(modeChanged);
     featuredTimer?.cancel();
@@ -144,7 +161,6 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       categoriesFocus,
       searchFocus,
       detailsFocus,
-      watchFocus,
       gridSearch,
       gridSort,
       gridCatalog,
@@ -336,6 +352,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
 
   void modeChanged() {
     if (!mounted) return;
+    posterPreview.dismiss(restoreFocus: false);
     startFeaturedRotation();
     restoreLiteSelection = BrowsingModeSettings.instance.lite;
     if (!BrowsingModeSettings.instance.lite && selectedTitle != null) {
@@ -392,7 +409,11 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   }
 
   bool handleBack() {
-    if (!grid) return false;
+    if (grid && posterPreview.dismiss()) return true;
+    if (!grid) {
+      posterPreview.close();
+      return false;
+    }
     setState(() {
       grid = false;
       filter = null;
@@ -424,6 +445,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     WatchEntry? resume,
     bool watch = false,
   }) async {
+    posterPreview.dismiss(restoreFocus: false);
     selectedTitle = item.id;
     if (!await requestTitleAccess(context, widget.provider, item) || !mounted) {
       return;
@@ -581,14 +603,9 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     final key = _rowKey(rows[index].id);
     if (key.currentState == null && page.hasClients) {
       await page.animateTo(
-        (56 +
-                heroExtent +
-                rows
-                    .take(index)
-                    .fold<double>(
-                      0,
-                      (sum, section) => sum + _extentFor(section),
-                    ))
+        rows
+            .take(index)
+            .fold<double>(0, (sum, section) => sum + _extentFor(section))
             .clamp(0, page.position.maxScrollExtent),
         duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
@@ -667,9 +684,9 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     if (BrowsingModeSettings.instance.lite) return liteCatalog();
     final size = MediaQuery.sizeOf(context);
     final scale = (size.width / 1920).clamp(.65, 1.1);
-    final width = (220 * scale).clamp(150.0, 242.0);
+    final width = (180 * scale).clamp(122.0, 198.0);
     posterWidth = width;
-    rowExtent = width * 1.3 + 130;
+    rowExtent = width * 1.3 + 108;
     heroExtent = (size.height * .42).clamp(250.0, 460.0);
     final rows = _sections;
     return ColoredBox(
@@ -701,6 +718,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
               ? Column(
                   children: [
                     header(),
+                    if (featured != null) featuredPanel(scale),
                     gridControls(),
                     Expanded(child: gridBody(width)),
                   ],
@@ -714,103 +732,104 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
                     ),
                   ],
                 )
-              : ListView.builder(
-                  key: PageStorageKey('${widget.type.name}-catalog-scroll'),
-                  controller: page,
-                  scrollCacheExtent: ScrollCacheExtent.pixels(rowExtent),
-                  itemCount: rows.length + 3,
-                  findChildIndexCallback: (key) {
-                    if (key is ValueKey<String> &&
-                        key.value.startsWith('series-section:')) {
-                      final index = rows.indexWhere(
-                        (row) => 'series-section:${row.id}' == key.value,
-                      );
-                      return index < 0 ? null : index + 2;
-                    }
-                    return null;
-                  },
-                  itemBuilder: (context, index) {
-                    if (index == 0) return header();
-                    if (index == 1) {
-                      return SizedBox(
-                        height: heroExtent,
-                        child: _FeaturedHero(
-                          key: const ValueKey('series-featured-hero'),
-                          item: featured!,
-                          scale: scale,
-                          details: loadDetails(featured!),
-                          resume: watching
-                              .where((e) => e.item.id == featured!.id)
-                              .firstOrNull,
-                          watchFocus: watchFocus,
-                          detailsFocus: detailsFocus,
-                          onWatch: () => open(
-                            featured!,
-                            watch: true,
-                            resume: watching
-                                .where((e) => e.item.id == featured!.id)
-                                .firstOrNull,
+              : catalogRows(
+                  ListView.builder(
+                    key: PageStorageKey('${widget.type.name}-catalog-scroll'),
+                    controller: page,
+                    scrollCacheExtent: ScrollCacheExtent.pixels(rowExtent),
+                    itemCount: rows.length + 1,
+                    findChildIndexCallback: (key) {
+                      if (key is ValueKey<String> &&
+                          key.value.startsWith('series-section:')) {
+                        final index = rows.indexWhere(
+                          (row) => 'series-section:${row.id}' == key.value,
+                        );
+                        return index < 0 ? null : index;
+                      }
+                      return null;
+                    },
+                    itemBuilder: (context, index) {
+                      index += 2;
+                      if (index == rows.length + 2) {
+                        return SizedBox(
+                          height: 64,
+                          child: Focus(
+                            canRequestFocus: false,
+                            onKeyEvent: (_, event) {
+                              if (event is KeyDownEvent &&
+                                  event.logicalKey ==
+                                      LogicalKeyboardKey.arrowUp) {
+                                unawaited(focusRow(rows.length - 1));
+                                return KeyEventResult.handled;
+                              }
+                              return KeyEventResult.ignored;
+                            },
+                            child: TextButton(
+                              focusNode: footerFocus,
+                              onPressed: () => showGrid(null),
+                              child: Text('Browse All $catalogName'),
+                            ),
                           ),
-                          onDetails: () => open(featured!),
-                          up: () => searchFocus.requestFocus(),
-                          down: () => unawaited(focusRow(0)),
-                          left: widget.onNavigation,
-                        ),
-                      );
-                    }
-                    if (index == rows.length + 2) {
+                        );
+                      }
+                      final row = index - 2, section = rows[row];
                       return SizedBox(
-                        height: 64,
-                        child: Focus(
-                          canRequestFocus: false,
-                          onKeyEvent: (_, event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey ==
-                                    LogicalKeyboardKey.arrowUp) {
-                              unawaited(focusRow(rows.length - 1));
-                              return KeyEventResult.handled;
-                            }
-                            return KeyEventResult.ignored;
-                          },
-                          child: TextButton(
-                            focusNode: footerFocus,
-                            onPressed: () => showGrid(null),
-                            child: Text('Browse All $catalogName'),
-                          ),
-                        ),
-                      );
-                    }
-                    final row = index - 2, section = rows[row];
-                    return SizedBox(
-                      key: ValueKey('series-section:${section.id}'),
-                      height: _extentFor(section),
-                      child: _CatalogSection(
-                        key: _rowKey(section.id),
-                        section: section,
-                        width: section.landscape ? width * 1.7 : width,
+                        key: ValueKey('series-section:${section.id}'),
                         height: _extentFor(section),
-                        provider: widget.provider,
-                        watching: watching,
-                        onOpen: (item) => open(item),
-                        onFocus: (item) => selectedTitle = item.id,
-                        onResume: (entry) =>
-                            open(entry.item, watch: true, resume: entry),
-                        onMove: (direction, current) =>
-                            unawaited(focusRow(row + direction)),
-                        onNavigation: widget.onNavigation,
-                        onEmpty: () {
-                          if (mounted) {
-                            setState(() => emptyRows.add(section.id));
-                          }
-                        },
-                      ),
-                    );
-                  },
+                        child: _CatalogSection(
+                          key: _rowKey(section.id),
+                          section: section,
+                          width: section.landscape ? width * 1.7 : width,
+                          height: _extentFor(section),
+                          provider: widget.provider,
+                          watching: watching,
+                          onOpen: (item) => open(item),
+                          onFocus: focusTitle,
+                          onResume: (entry) =>
+                              open(entry.item, watch: true, resume: entry),
+                          onMove: (direction, current) =>
+                              unawaited(focusRow(row + direction)),
+                          onNavigation: widget.onNavigation,
+                          onEmpty: () {
+                            if (mounted) {
+                              setState(() => emptyRows.add(section.id));
+                            }
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                  scale,
                 ),
         ),
       ),
     );
   }
+
+  Widget featuredPanel(double scale) {
+    return SizedBox(
+      height: heroExtent,
+      child: _FeaturedHero(
+        key: const ValueKey('series-featured-hero'),
+        item: featured!,
+        scale: scale,
+        details: loadDetails(featured!),
+        detailsFocus: detailsFocus,
+        onDetails: () => open(featured!),
+        up: () => searchFocus.requestFocus(),
+        down: () => grid ? gridSearch.requestFocus() : unawaited(focusRow(0)),
+        left: widget.onNavigation,
+      ),
+    );
+  }
+
+  Widget catalogRows(Widget rows, double scale) => Column(
+    children: [
+      header(),
+      featuredPanel(scale),
+      Expanded(child: rows),
+    ],
+  );
 
   Widget liteCatalog() => ColoredBox(
     color: const Color(0xff0d121b),
@@ -1099,7 +1118,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
         );
       }
       if (!snapshot.hasData) {
-        return SeriesCatalogSkeleton(label: 'Loading $catalogLower catalog');
+        return Center(child: Text('Loading $catalogLower catalog'));
       }
       final rows = snapshot.data!
           .where((item) => item.name.toLowerCase().contains(query))
@@ -1131,7 +1150,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       }
       return LayoutBuilder(
         builder: (context, constraints) {
-          final columns = constraints.maxWidth < 850 ? 5 : 6;
+          final columns = constraints.maxWidth < 850 ? 6 : 7;
           final selectedIndex = rows.indexWhere(
             (item) => item.id == restoredGridTitle,
           );
@@ -1193,7 +1212,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
                     : index == selectedIndex
                     ? gridSelected
                     : null,
-                onFocus: () => selectedTitle = rows[index].id,
+                inlineExpansion: false,
+                onFocus: () => focusTitle(rows[index]),
                 onOpen: () => open(rows[index]),
               ),
             ),
@@ -1311,7 +1331,7 @@ class _CatalogSectionState extends State<_CatalogSection>
               return MediaHorizontalRail(
                 key: rail,
                 count: rows.length,
-                width: widget.width * 1.22 + 18,
+                width: widget.width + 18,
                 height: widget.height - 54,
                 up: () => widget.onMove(-1, rail.currentState?.current ?? 0),
                 down: () => widget.onMove(1, rail.currentState?.current ?? 0),
@@ -1321,26 +1341,28 @@ class _CatalogSectionState extends State<_CatalogSection>
                   final entry = widget.watching
                       .where((e) => e.item.id == item.id)
                       .firstOrNull;
+                  Widget card(FocusNode focus) => SeriesPosterCard(
+                    item: item,
+                    provider: widget.provider,
+                    focusNode: focus,
+                    inlineExpansion: false,
+                    onFocus: () => widget.onFocus?.call(item),
+                    progress: widget.section.landscape ? entry : null,
+                    onOpen: () => widget.section.landscape && entry != null
+                        ? widget.onResume(entry)
+                        : widget.onOpen(item),
+                    onRemove: widget.section.landscape
+                        ? () => confirmHistoryRemoval(
+                            context,
+                            WatchHistory.forProvider(widget.provider),
+                            item,
+                          )
+                        : null,
+                    onDetails: () => widget.onOpen(item),
+                  );
                   return Padding(
                     padding: const EdgeInsets.fromLTRB(4, 6, 14, 12),
-                    child: SeriesPosterCard(
-                      item: item,
-                      provider: widget.provider,
-                      focusNode: node,
-                      onFocus: () => widget.onFocus?.call(item),
-                      progress: widget.section.landscape ? entry : null,
-                      onOpen: () => widget.section.landscape && entry != null
-                          ? widget.onResume(entry)
-                          : widget.onOpen(item),
-                      onRemove: widget.section.landscape
-                          ? () => confirmHistoryRemoval(
-                              context,
-                              WatchHistory.forProvider(widget.provider),
-                              item,
-                            )
-                          : null,
-                      onDetails: () => widget.onOpen(item),
-                    ),
+                    child: card(node),
                   );
                 },
               );
@@ -1356,11 +1378,13 @@ class _CatalogSectionState extends State<_CatalogSection>
 class SeriesPosterCard extends StatelessWidget {
   final ContentItem item;
   final IptvProvider provider;
+  final bool inlineExpansion;
   final FocusNode? focusNode;
   final WatchEntry? progress;
   final VoidCallback onOpen;
   final VoidCallback? onDetails, onFocus, onRemove;
   const SeriesPosterCard({
+    this.inlineExpansion = true,
     super.key,
     required this.item,
     required this.provider,
@@ -1404,13 +1428,21 @@ class SeriesPosterCard extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final focused = Focus.of(context).hasFocus;
+          final movie = item.type == ContentType.movies;
+          final expansion = movie ? 1.28 : 1.22;
           return TweenAnimationBuilder<double>(
-            tween: Tween(begin: 1, end: focused ? 1.22 : 1),
+            tween: Tween(
+              begin: 1,
+              end: focused && inlineExpansion ? expansion : 1,
+            ),
             builder: (_, factor, child) => OverflowBox(
               minWidth: 0,
               maxWidth: double.infinity,
               child: SizedBox(
-                width: constraints.maxWidth / 1.22 * factor,
+                width:
+                    constraints.maxWidth /
+                    (inlineExpansion ? expansion : 1) *
+                    factor,
                 height: constraints.maxHeight,
                 child: child,
               ),
@@ -1467,7 +1499,53 @@ class SeriesPosterCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (progress != null)
+                  if (movie && inlineExpansion)
+                    SizedBox(
+                      height: 34,
+                      child: focused
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  [
+                                    if (item.releaseYear != null)
+                                      '${item.releaseYear}',
+                                    if (item.rating != null)
+                                      '\u2605 ${item.rating!.toStringAsFixed(1)}/10',
+                                    'Movie',
+                                  ].join(' \u00b7 '),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xffb4becc),
+                                  ),
+                                ),
+                                if (progress != null)
+                                  Text(
+                                    'Resume - ${((progress!.duration - progress!.position).inSeconds / 60).ceil()} min left',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xffb4becc),
+                                    ),
+                                  ),
+                              ],
+                            )
+                          : progress != null
+                          ? Text(
+                              'Resume - ${((progress!.duration - progress!.position).inSeconds / 60).ceil()} min left',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xffb4becc),
+                              ),
+                            )
+                          : null,
+                    )
+                  else if (progress != null)
                     Text(
                       'Resume \u00b7 ${item.type == ContentType.series && progress!.episode != null ? 'S${progress!.episode!.season} E${progress!.episode!.number} \u00b7 ' : ''}${((progress!.duration - progress!.position).inSeconds / 60).ceil()} min left',
                       maxLines: 1,
@@ -1498,18 +1576,14 @@ class SeriesPosterCard extends StatelessWidget {
 class _FeaturedHero extends StatefulWidget {
   final ContentItem item;
   final Future<SeriesDetails> details;
-  final WatchEntry? resume;
-  final FocusNode watchFocus, detailsFocus;
-  final VoidCallback onWatch, onDetails, up, down, left;
+  final FocusNode detailsFocus;
+  final VoidCallback onDetails, up, down, left;
   final double scale;
   const _FeaturedHero({
     super.key,
     required this.item,
     required this.details,
-    required this.resume,
-    required this.watchFocus,
     required this.detailsFocus,
-    required this.onWatch,
     required this.onDetails,
     required this.up,
     required this.down,
@@ -1602,64 +1676,108 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 12),
-    child: ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: FutureBuilder<SeriesDetails>(
-        future: widget.details,
-        builder: (context, snapshot) {
-          final info = snapshot.data?.details;
-          return FutureBuilder<(Uri?, Uri?)>(
-            future: artwork,
-            builder: (context, images) {
-              final backdrop =
-                  images.data?.$2 ?? arrivingBackdrop ?? info?.backdrop;
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  const ColoredBox(color: Color(0xff151d28)),
-                  if (backdrop != null)
-                    SharedArtworkImage(
-                      kind: ArtworkKind.backdrop,
-                      imageUrl: backdrop.toString(),
-                      fit: BoxFit.cover,
-                      alignment: Alignment.centerRight,
-                      errorWidget: (_, _, _) => recoverBackdrop(info),
-                    ),
-                  const DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          Color(0xff0b1018),
-                          Color(0xdd0b1018),
-                          Color(0x220b1018),
-                        ],
-                        stops: [0, .4, 1],
+  Widget build(BuildContext context) => Focus(
+    focusNode: widget.detailsFocus,
+    onKeyEvent: (_, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+        return KeyEventResult.ignored;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        widget.down();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        widget.up();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        widget.left();
+        return KeyEventResult.handled;
+      }
+      if (event is KeyDownEvent &&
+          [
+            LogicalKeyboardKey.enter,
+            LogicalKeyboardKey.select,
+          ].contains(event.logicalKey)) {
+        widget.onDetails();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: FutureBuilder<SeriesDetails>(
+          key: ValueKey(widget.item.id),
+          future: widget.details,
+          builder: (context, snapshot) {
+            final info = snapshot.data?.details;
+            return FutureBuilder<(Uri?, Uri?)>(
+              future: artwork,
+              builder: (context, images) {
+                final backdrop =
+                    images.data?.$2 ?? arrivingBackdrop ?? info?.backdrop;
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const ColoredBox(color: Color(0xff151d28)),
+                    if (backdrop != null)
+                      SharedArtworkImage(
+                        kind: ArtworkKind.backdrop,
+                        imageUrl: backdrop.toString(),
+                        fit: BoxFit.cover,
+                        alignment: Alignment.centerRight,
+                        errorWidget: (_, _, _) => recoverBackdrop(info),
+                      ),
+                    const DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Color(0xff0b1018),
+                            Color(0x880b1018),
+                            Color(0x000b1018),
+                          ],
+                          stops: [0, .4, 1],
+                        ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: MediaQuery.sizeOf(context).width * .48,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if ((images.data?.$1 ?? arrivingLogo) != null)
-                                SharedArtworkImage(
-                                  imageUrl: (images.data?.$1 ?? arrivingLogo)
-                                      .toString(),
-                                  kind: ArtworkKind.logo,
-                                  height: 54 * widget.scale,
-                                  width: 300 * widget.scale,
-                                  alignment: Alignment.centerLeft,
-                                  fit: BoxFit.contain,
-                                  errorWidget: (_, _, _) => Text(
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: MediaQuery.sizeOf(context).width * .48,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if ((images.data?.$1 ?? arrivingLogo) != null)
+                                  SharedArtworkImage(
+                                    imageUrl: (images.data?.$1 ?? arrivingLogo)
+                                        .toString(),
+                                    kind: ArtworkKind.logo,
+                                    height: 54 * widget.scale,
+                                    width: 300 * widget.scale,
+                                    alignment: Alignment.centerLeft,
+                                    fit: BoxFit.contain,
+                                    errorWidget: (_, _, _) => Text(
+                                      widget.item.type == ContentType.movies
+                                          ? widget.item.name
+                                          : TmdbCastService.cleanSeriesTitle(
+                                              widget.item.name,
+                                            ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 34 * widget.scale,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  Text(
                                     widget.item.type == ContentType.movies
                                         ? widget.item.name
                                         : TmdbCastService.cleanSeriesTitle(
@@ -1672,129 +1790,53 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                )
-                              else
-                                Text(
-                                  widget.item.type == ContentType.movies
-                                      ? widget.item.name
-                                      : TmdbCastService.cleanSeriesTitle(
-                                          widget.item.name,
-                                        ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 34 * widget.scale,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              if (info != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    [
-                                      TmdbCastService.configured.year(info) ??
-                                          '',
-                                      info.genre,
-                                      if (snapshot.data!.episodes.isNotEmpty)
-                                        '${snapshot.data!.episodes.map((e) => e.season).toSet().length} Seasons',
-                                      if (info.rating.isNotEmpty)
-                                        '\u2605 ${double.tryParse(info.rating)?.toStringAsFixed(1) ?? info.rating}',
-                                    ].where((s) => s.isNotEmpty).join(' \u00b7 '),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 16 * widget.scale,
-                                      color: const Color(0xffb4becc),
+                                if (info != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 8),
+                                    child: Text(
+                                      [
+                                        TmdbCastService.configured.year(info) ??
+                                            '',
+                                        info.genre,
+                                        if (snapshot.data!.episodes.isNotEmpty)
+                                          '${snapshot.data!.episodes.map((e) => e.season).toSet().length} Seasons',
+                                        if (info.rating.isNotEmpty)
+                                          '\u2605 ${double.tryParse(info.rating)?.toStringAsFixed(1) ?? info.rating}',
+                                      ].where((s) => s.isNotEmpty).join(' \u00b7 '),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 16 * widget.scale,
+                                        color: const Color(0xffb4becc),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              if (info != null && info.synopsis.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 10),
-                                  child: Text(
-                                    info.synopsis,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 19 * widget.scale,
-                                      height: 1.3,
-                                      color: const Color(0xffb4becc),
+                                if (info != null && info.synopsis.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 10),
+                                    child: Text(
+                                      info.synopsis,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 19 * widget.scale,
+                                        height: 1.3,
+                                        color: const Color(0xffb4becc),
+                                      ),
                                     ),
                                   ),
-                                ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 14),
-                        Focus(
-                          canRequestFocus: false,
-                          onKeyEvent: (_, event) {
-                            if (event is! KeyDownEvent &&
-                                event is! KeyRepeatEvent) {
-                              return KeyEventResult.ignored;
-                            }
-                            if (event.logicalKey ==
-                                LogicalKeyboardKey.arrowDown) {
-                              widget.down();
-                              return KeyEventResult.handled;
-                            }
-                            if (event.logicalKey ==
-                                LogicalKeyboardKey.arrowUp) {
-                              widget.up();
-                              return KeyEventResult.handled;
-                            }
-                            if (event.logicalKey ==
-                                    LogicalKeyboardKey.arrowLeft &&
-                                widget.watchFocus.hasFocus) {
-                              widget.left();
-                              return KeyEventResult.handled;
-                            }
-                            return KeyEventResult.ignored;
-                          },
-                          child: Row(
-                            children: [
-                              FilledButton.icon(
-                                focusNode: widget.watchFocus,
-                                onPressed: widget.onWatch,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: const Color(0xff10151c),
-                                  minimumSize: const Size(0, 38),
-                                ),
-                                icon: const Icon(Icons.play_arrow),
-                                label: Text(
-                                  widget.resume == null
-                                      ? 'Watch Now'
-                                      : widget.item.type !=
-                                                ContentType.series ||
-                                            widget.resume!.episode == null
-                                      ? 'Resume'
-                                      : 'Resume S${widget.resume!.episode!.season} E${widget.resume!.episode!.number}',
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              TextButton(
-                                focusNode: widget.detailsFocus,
-                                onPressed: widget.onDetails,
-                                style: TextButton.styleFrom(
-                                  foregroundColor: Colors.white,
-                                  backgroundColor: const Color(0xcc202a36),
-                                  minimumSize: const Size(0, 38),
-                                  side: const BorderSide(color: _blue),
-                                ),
-                                child: const Text('Details'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              );
-            },
-          );
-        },
+                  ],
+                );
+              },
+            );
+          },
+        ),
       ),
     ),
   );

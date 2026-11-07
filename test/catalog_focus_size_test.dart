@@ -27,7 +27,13 @@ void main() {
                   width: 220,
                   height: 380,
                   child: SeriesPosterCard(
-                    item: ContentItem(id: '1', name: 'Title', type: type),
+                    item: ContentItem(
+                      id: '1',
+                      name: 'Title',
+                      type: type,
+                      releaseYear: 2026,
+                      rating: 8.1,
+                    ),
                     provider: provider,
                     focusNode: node,
                     onOpen: () {},
@@ -46,10 +52,19 @@ void main() {
           )
           .first;
       final initial = tester.getSize(body);
+      if (type == ContentType.movies) {
+        expect(find.textContaining('8.1/10'), findsNothing);
+      }
       node.requestFocus();
       await tester.pumpAndSettle();
       final focused = tester.getSize(body);
-      expect(focused.width, closeTo(initial.width * 1.22, .1));
+      if (type == ContentType.movies) {
+        expect(find.textContaining('8.1/10'), findsOneWidget);
+      }
+      expect(
+        focused.width,
+        closeTo(initial.width * (type == ContentType.movies ? 1.28 : 1.22), .1),
+      );
       expect(focused.height, initial.height);
       expect(focused.width, lessThanOrEqualTo(220.01));
       other.requestFocus();

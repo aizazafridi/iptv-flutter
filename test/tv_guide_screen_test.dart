@@ -70,7 +70,72 @@ class DurationProvider extends GuideProvider {
   }
 }
 
+class LongGuideProvider extends GuideProvider {
+  @override
+  Future<List<ContentItem>> getAllItems(ContentType type) async => [
+    for (var i = 0; i < 30; i++)
+      ContentItem(id: '$i', name: 'Channel $i', type: ContentType.live),
+  ];
+}
+
 void main() {
+  testWidgets('guide categories move focus horizontally across lazy items', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    await tester.pumpWidget(
+      MaterialApp(home: TvGuideScreen(provider: CategoryGuideProvider())),
+    );
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    final original = FocusManager.instance.primaryFocus;
+    expect(original!.debugLabel, startsWith('guide category'));
+    for (var i = 0; i < 10; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+    }
+    expect(FocusManager.instance.primaryFocus, isNot(same(original)));
+    expect(
+      FocusManager.instance.primaryFocus!.debugLabel,
+      'guide category extra8',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pumpAndSettle();
+    expect(
+      FocusManager.instance.primaryFocus!.debugLabel,
+      'guide category extra7',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('remote moves through channel rows beyond the first viewport', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: TvGuideScreen(provider: LongGuideProvider()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(FocusManager.instance.primaryFocus?.debugLabel, 'guide channel 0');
+    for (var i = 1; i < 16; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(
+        FocusManager.instance.primaryFocus?.debugLabel,
+        'guide channel $i',
+      );
+    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(FocusManager.instance.primaryFocus?.debugLabel, 'guide channel 14');
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'guide filters current category and follows remote focus ladder',
     (tester) async {

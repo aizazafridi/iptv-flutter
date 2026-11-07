@@ -218,8 +218,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (recordingLocksPlayback) return KeyEventResult.handled;
         if (duration <= Duration.zero) return KeyEventResult.handled;
         final step = event.logicalKey == LogicalKeyboardKey.arrowRight
-            ? 10000
-            : -10000;
+            ? seekSeconds * 1000
+            : -seekSeconds * 1000;
         final target =
             ((dragPosition ?? position.inMilliseconds.toDouble()) + step).clamp(
               timelineStart.inMilliseconds.toDouble(),
@@ -355,7 +355,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
       final target =
           (position.inMilliseconds +
-                  (key == LogicalKeyboardKey.arrowRight ? 10000 : -10000))
+                  (key == LogicalKeyboardKey.arrowRight
+                      ? seekSeconds * 1000
+                      : -seekSeconds * 1000))
               .clamp(0, duration.inMilliseconds);
       setState(() => dragPosition = target.toDouble());
       revealControls();
@@ -908,8 +910,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (mounted) setState(() {});
   }
 
-  String get seekLabel => seekSeconds == 30
-      ? '30 seconds'
+  String get seekLabel => seekSeconds < 60
+      ? '$seekSeconds seconds'
       : '${seekSeconds ~/ 60} ${seekSeconds == 60 ? 'minute' : 'minutes'}';
   Future<void> chooseEpisode() async {
     if (widget.episodes.isEmpty) return;
@@ -1790,8 +1792,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       builder: (context) => PopScope(
         canPop: false,
         child: AlertDialog(
-          title: const Text('Exit Live TV?'),
-          content: const Text('Are you sure you want to exit Live TV?'),
+          title: Text(source.isLive ? 'Exit Live TV?' : 'Exit player?'),
+          content: Text(
+            source.isLive
+                ? 'Are you sure you want to exit Live TV?'
+                : 'Are you sure you want to stop watching and exit?',
+          ),
           actions: [
             TextButton(
               autofocus: true,
@@ -1810,7 +1816,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (mounted && confirmed == true) {
       await exitPlayer();
     } else if (mounted) {
-      liveSurfaceFocus.requestFocus();
+      if (source.isLive) {
+        liveSurfaceFocus.requestFocus();
+      } else {
+        revealControls();
+        playPauseFocus.requestFocus();
+      }
     }
   }
 
@@ -1846,7 +1857,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     } else if (liveTvMode && source.isLive) {
       unawaited(confirmLiveExit());
     } else {
-      unawaited(exitPlayer());
+      unawaited(confirmLiveExit());
     }
   }
 
@@ -1902,13 +1913,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget buildPlayer(BuildContext context) => PopScope(
-    canPop:
-        exitingPlayer ||
-        (!liveTvMode &&
-            !controlsVisible &&
-            !showAutoNext &&
-            !upNextVisible &&
-            !guideVisible),
+    canPop: exitingPlayer,
     onPopInvokedWithResult: (didPop, result) {
       if (didPop) {
         // Capture progress before shutdown events and before the details page resumes.
@@ -2052,13 +2057,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       : 'Buffering...',
                                   style: const TextStyle(color: Colors.white),
                                 ),
-                                if (!source.isLive && bufferPercent != null)
-                                  Text(
-                                    'Buffer ${bufferPercent!.round()}%',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                    ),
-                                  ),
                               ],
                             ),
                           ),
@@ -2137,10 +2135,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       seekFocus: timelineFocus,
                       onActivity: revealControls,
                       onPlay: togglePlayback,
+                      seekSeconds: seekSeconds,
                       onRewind: () =>
-                          seek(position - const Duration(seconds: 10)),
+                          seek(position - Duration(seconds: seekSeconds)),
                       onForward: () =>
-                          seek(position + const Duration(seconds: 10)),
+                          seek(position + Duration(seconds: seekSeconds)),
                       onPrevious: previousEpisode == null || advancingEpisode
                           ? null
                           : () => switchEpisode(previousEpisode!),
@@ -2733,9 +2732,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                     videoRecorder!.recording
                                                     ? 'Stop recording'
                                                     : 'Record',
-                                                color: Colors.redAccent,
-                                                disabledColor: Colors.redAccent
-                                                    .withValues(alpha: .35),
+                                                color: source.isLive
+                                                    ? Colors.white
+                                                    : Colors.redAccent,
+                                                disabledColor:
+                                                    (source.isLive
+                                                            ? Colors.white
+                                                            : Colors.redAccent)
+                                                        .withValues(alpha: .35),
                                                 onPressed:
                                                     videoRecorder!.busy ||
                                                         starting ||

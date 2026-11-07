@@ -262,36 +262,27 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     });
   }
 
-  List<Category>? measuredCategories;
   TextScaler? measuredScaler;
   TextDirection? measuredDirection;
-  double? measuredCategoryWidth;
-  double get categoryWidth {
+  final measuredTabWidths = <String, double>{};
+  double tabWidth(String label) {
     final scaler = MediaQuery.textScalerOf(context);
     final direction = Directionality.of(context);
-    if (identical(measuredCategories, categories) &&
-        measuredScaler == scaler &&
-        measuredDirection == direction &&
-        measuredCategoryWidth != null) {
-      return measuredCategoryWidth!;
+    if (measuredScaler != scaler || measuredDirection != direction) {
+      measuredTabWidths.clear();
+      measuredScaler = scaler;
+      measuredDirection = direction;
     }
-    var width = 126.0;
-    // Measure the provider labels once, not once per group on each focus change.
-    // Search filters do not change the shared tab width or force new layouts.
-    final painter = TextPainter(textDirection: direction, textScaler: scaler);
-    for (final category in categories) {
-      painter.text = TextSpan(
-        text: category.name,
-        style: const TextStyle(fontSize: 12),
-      );
-      painter.layout();
-      if (painter.width + 38 > width) width = painter.width + 38;
-    }
-    painter.dispose();
-    measuredCategories = categories;
-    measuredScaler = scaler;
-    measuredDirection = direction;
-    return measuredCategoryWidth = width;
+    return measuredTabWidths.putIfAbsent(label, () {
+      final painter = TextPainter(
+        textDirection: direction,
+        textScaler: scaler,
+        text: TextSpan(text: label, style: const TextStyle(fontSize: 12)),
+      )..layout();
+      final width = painter.width.ceilToDouble() + 38;
+      painter.dispose();
+      return width;
+    });
   }
 
   void focusActiveCategory() {
@@ -317,7 +308,12 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     }
     index = index.clamp(0, tabs.length - 1);
     final id = tabs[index].id;
-    final target = index * categoryWidth;
+    final target = tabs
+        .take(index)
+        .fold<double>(
+          0,
+          (offset, category) => offset + tabWidth(category.name),
+        );
     if (categoryScroll.hasClients) {
       categoryScroll.jumpTo(
         target.clamp(0, categoryScroll.position.maxScrollExtent),
@@ -477,7 +473,7 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     child: ListView.builder(
       controller: categoryScroll,
       scrollDirection: Axis.horizontal,
-      itemExtent: categoryWidth,
+
       itemCount: tabs.length,
       itemBuilder: (_, index) {
         final category = tabs[index];
@@ -485,47 +481,50 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
           category.id,
           () => FocusNode(debugLabel: 'channel category ${category.id}'),
         );
-        return Padding(
-          padding: const EdgeInsets.only(right: 6),
-          child: Focus(
-            focusNode: node,
-            onKeyEvent: (_, event) {
-              if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-                return KeyEventResult.ignored;
-              }
-              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-                focusCategory(index - 1);
-                return KeyEventResult.handled;
-              }
-              if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-                focusCategory(index + 1);
-                return KeyEventResult.handled;
-              }
-              if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                if (searching) {
-                  categorySearchInput.requestFocus();
-                } else {
-                  allModeFocus.requestFocus();
+        return SizedBox(
+          width: tabWidth(category.name),
+          child: Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: Focus(
+              focusNode: node,
+              onKeyEvent: (_, event) {
+                if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                  return KeyEventResult.ignored;
                 }
-                return KeyEventResult.handled;
-              }
-              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                returnToChannels();
-                return KeyEventResult.handled;
-              }
-              if (event is KeyDownEvent &&
-                  (event.logicalKey == LogicalKeyboardKey.select ||
-                      event.logicalKey == LogicalKeyboardKey.enter)) {
-                if (!busy) unawaited(loadCategory(category.id));
-                return KeyEventResult.handled;
-              }
-              return KeyEventResult.ignored;
-            },
-            child: channelTab(
-              category.name,
-              node,
-              selected: category.id == selectedCategory,
-              onTap: () => loadCategory(category.id),
+                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  focusCategory(index - 1);
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  focusCategory(index + 1);
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  if (searching) {
+                    categorySearchInput.requestFocus();
+                  } else {
+                    allModeFocus.requestFocus();
+                  }
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  returnToChannels();
+                  return KeyEventResult.handled;
+                }
+                if (event is KeyDownEvent &&
+                    (event.logicalKey == LogicalKeyboardKey.select ||
+                        event.logicalKey == LogicalKeyboardKey.enter)) {
+                  if (!busy) unawaited(loadCategory(category.id));
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: channelTab(
+                category.name,
+                node,
+                selected: category.id == selectedCategory,
+                onTap: () => loadCategory(category.id),
+              ),
             ),
           ),
         );
@@ -598,9 +597,14 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
     final targetIndex = index.clamp(0, ids.length - 1);
     final id = ids[targetIndex];
     if (groupScroll.hasClients) {
-      final start = targetIndex * categoryWidth;
+      final start = ids
+          .take(targetIndex)
+          .fold<double>(
+            0,
+            (offset, groupId) => offset + tabWidth(groups!.name(groupId)),
+          );
       final position = groupScroll.position;
-      final end = start + categoryWidth;
+      final end = start + tabWidth(groups!.name(id));
       final target = start < position.pixels
           ? start
           : end > position.pixels + position.viewportDimension
@@ -637,7 +641,7 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: SizedBox(
-                width: categoryWidth - 6,
+                width: tabWidth(groups!.name(id)) - 6,
                 child: Focus(
                   focusNode: groupNodes.putIfAbsent(
                     id,
@@ -779,11 +783,8 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
                 ),
               IconButton(
                 focusNode: searchFocus,
-                tooltip: selectedCategory == 'favorites'
-                    ? 'Search channels'
-                    : 'Search categories',
-                onPressed: () =>
-                    openSearch(channels: selectedCategory == 'favorites'),
+                tooltip: 'Search categories',
+                onPressed: () => openSearch(channels: false),
                 icon: const Icon(Icons.search, color: Colors.white70),
               ),
               IconButton(
@@ -836,7 +837,7 @@ class _LiveChannelBrowserState extends State<LiveChannelBrowser> {
                 if (scroll.hasClients) scroll.jumpTo(0);
               }),
             ),
-          if (searching && selectedCategory != 'favorites')
+          if (searching)
             ActivationTextField(
               key: const ValueKey('live-category-search-input'),
               autofocus: true,

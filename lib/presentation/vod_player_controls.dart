@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 class VodPlayerControls extends StatelessWidget {
   final String title, metadata, positionLabel, durationLabel;
   final double position, duration;
+  final int seekSeconds;
   final bool visible, playing, seekEnabled, seeking;
   final FocusNode playFocus, seekFocus;
   final VoidCallback onActivity, onPlay, onRewind, onForward;
@@ -12,6 +13,7 @@ class VodPlayerControls extends StatelessWidget {
   final ValueChanged<double> onSeekChanged, onSeekEnd;
   const VodPlayerControls({
     super.key,
+    this.seekSeconds = 10,
     required this.title,
     required this.metadata,
     required this.positionLabel,
@@ -211,8 +213,12 @@ class VodPlayerControls extends StatelessWidget {
                                 onPrevious,
                               ),
                             action(
-                              'Rewind 10s',
-                              Icons.replay_10_rounded,
+                              'Rewind ${seekSeconds}s',
+                              seekSeconds == 10
+                                  ? Icons.replay_10_rounded
+                                  : seekSeconds == 30
+                                  ? Icons.replay_30_rounded
+                                  : Icons.replay_rounded,
                               seekEnabled ? onRewind : null,
                             ),
                             action(
@@ -225,8 +231,12 @@ class VodPlayerControls extends StatelessWidget {
                               node: playFocus,
                             ),
                             action(
-                              'Forward 10s',
-                              Icons.forward_10_rounded,
+                              'Forward ${seekSeconds}s',
+                              seekSeconds == 10
+                                  ? Icons.forward_10_rounded
+                                  : seekSeconds == 30
+                                  ? Icons.forward_30_rounded
+                                  : Icons.forward_rounded,
                               seekEnabled ? onForward : null,
                             ),
                             if (onNext != null)
@@ -375,9 +385,9 @@ class _VodActionState extends State<_VodAction> {
                   opacity: focused ? 1 : 0,
                   duration: const Duration(milliseconds: 150),
                   child: Text(
-                    widget.label == 'Rewind 10s'
+                    widget.label.startsWith('Rewind ')
                         ? 'Rewind'
-                        : widget.label == 'Forward 10s'
+                        : widget.label.startsWith('Forward ')
                         ? 'Forward'
                         : widget.label,
                     maxLines: 1,

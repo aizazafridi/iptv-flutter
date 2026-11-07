@@ -10,6 +10,32 @@ import 'provider_test.dart' show FixtureClient;
 import 'subtitle_test.dart' show FakeEngine;
 
 void main() {
+  test('ARY corrupted provider title uses identifying synopsis only', () async {
+    final client = FixtureClient();
+    final provider = XtreamProvider(client);
+    final badTitle = 'Príomhscéalta na Nuachta agus na Gaeltachta';
+    client.fixture = {
+      'epg_listings': [
+        for (final channelId in ['arydigital.pk', 'other.channel'])
+          {
+            'channel_id': channelId,
+            'title': base64.encode(utf8.encode(badTitle)),
+            'description': base64.encode(
+              utf8.encode('Dar-e-Nijaat is a drama about love.'),
+            ),
+            'start_timestamp': '1800000000',
+            'stop_timestamp': '1800003600',
+          },
+      ],
+    };
+    final rows = await provider.getEpg(
+      const ContentItem(id: '124', name: 'ARY Digital', type: ContentType.live),
+    );
+    expect(rows.map((p) => p.title), contains('Dar-e-Nijaat'));
+    expect(rows.map((p) => p.title), contains(badTitle));
+    provider.dispose();
+  });
+
   test(
     'EPG decodes text and uses absolute timestamps, not server wall time',
     () async {

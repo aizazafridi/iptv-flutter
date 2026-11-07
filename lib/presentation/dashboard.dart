@@ -1,3 +1,4 @@
+import 'history_removal.dart';
 import '../data/artwork_repository.dart';
 import 'shared_artwork_image.dart';
 import '../application/browsing_mode.dart';
@@ -972,6 +973,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                       key: ValueKey('${entry.item.type}:${entry.item.id}'),
                       item: entry.item,
                       onTap: () => openItem(entry.item),
+                      onRemove: () =>
+                          confirmHistoryRemoval(context, history, entry.item),
                       metadata:
                           '${entry.item.type != ContentType.series || entry.episode == null ? '' : 'S${entry.episode!.season} E${entry.episode!.number} \u00b7 '}$remaining min left',
                       progress: entry.duration.inSeconds <= 0
@@ -1204,12 +1207,14 @@ class _DashboardTitleCard extends StatefulWidget {
   final String metadata;
   final double? progress;
   final VoidCallback onTap;
+  final VoidCallback? onRemove;
   const _DashboardTitleCard({
     super.key,
     required this.item,
     required this.metadata,
     this.progress,
     required this.onTap,
+    this.onRemove,
   });
   @override
   State<_DashboardTitleCard> createState() => _DashboardTitleCardState();
@@ -1218,7 +1223,14 @@ class _DashboardTitleCard extends StatefulWidget {
 class _DashboardTitleCardState extends State<_DashboardTitleCard> {
   bool focused = false;
   @override
-  Widget build(BuildContext context) => SizedBox(
+  Widget build(BuildContext context) => widget.onRemove == null
+      ? card(context)
+      : HistoryRemoteAction(
+          onOpen: widget.onTap,
+          onRemove: widget.onRemove!,
+          child: card(context),
+        );
+  Widget card(BuildContext context) => SizedBox(
     width: 220,
     child: AnimatedScale(
       alignment: Alignment.centerLeft,
@@ -1239,6 +1251,7 @@ class _DashboardTitleCardState extends State<_DashboardTitleCard> {
           child: InkWell(
             borderRadius: BorderRadius.circular(10),
             onTap: widget.onTap,
+            onLongPress: widget.onRemove,
             onFocusChange: (value) {
               setState(() => focused = value);
               if (value) {

@@ -56,46 +56,81 @@ class HistoryRemoteAction extends StatefulWidget {
 }
 
 class _HistoryRemoteActionState extends State<HistoryRemoteAction> {
+  final scope = FocusNode(debugLabel: 'watch history remote action');
   Timer? timer;
+  LogicalKeyboardKey? pressed;
   bool held = false, active = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Run before a descendant Button/InkWell shortcut activates on key down.
+    FocusManager.instance.addEarlyKeyEventHandler(remoteKey);
+  }
+
   @override
   void dispose() {
+    FocusManager.instance.removeEarlyKeyEventHandler(remoteKey);
     timer?.cancel();
+    scope.dispose();
     super.dispose();
+  }
+
+  KeyEventResult remoteKey(KeyEvent event) {
+    final key = event.logicalKey;
+    if (![
+      LogicalKeyboardKey.enter,
+      LogicalKeyboardKey.select,
+      LogicalKeyboardKey.numpadEnter,
+      LogicalKeyboardKey.gameButtonA,
+    ].contains(key)) {
+      return KeyEventResult.ignored;
+    }
+    // The confirmation takes focus while OK is still held. Consume its repeats
+    // and release here so the dialog cannot also receive that same activation.
+    if (pressed == key) {
+      if (event is KeyUpEvent) {
+        timer?.cancel();
+        final open =
+            active &&
+            !held &&
+            scope.hasFocus &&
+            ModalRoute.of(context)?.isCurrent != false;
+        pressed = null;
+        active = false;
+        held = false;
+        if (open) widget.onOpen();
+      }
+      return KeyEventResult.handled;
+    }
+    if (!scope.hasFocus || ModalRoute.of(context)?.isCurrent == false) {
+      return KeyEventResult.ignored;
+    }
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    pressed = key;
+    active = true;
+    held = false;
+    timer = Timer(const Duration(milliseconds: 650), () {
+      if (mounted &&
+          active &&
+          scope.hasFocus &&
+          ModalRoute.of(context)?.isCurrent != false) {
+        held = true;
+        widget.onRemove();
+      }
+    });
+    return KeyEventResult.handled;
   }
 
   @override
   Widget build(BuildContext context) => Focus(
+    focusNode: scope,
     canRequestFocus: false,
     onFocusChange: (focused) {
       if (!focused) {
         timer?.cancel();
         active = false;
       }
-    },
-    onKeyEvent: (_, event) {
-      if (![
-        LogicalKeyboardKey.enter,
-        LogicalKeyboardKey.select,
-        LogicalKeyboardKey.numpadEnter,
-      ].contains(event.logicalKey)) {
-        return KeyEventResult.ignored;
-      }
-      if (event is KeyDownEvent && !active) {
-        active = true;
-        held = false;
-        timer = Timer(const Duration(milliseconds: 650), () {
-          if (mounted && active) {
-            held = true;
-            widget.onRemove();
-          }
-        });
-      } else if (event is KeyUpEvent && active) {
-        timer?.cancel();
-        active = false;
-        if (!held) widget.onOpen();
-      }
-      return KeyEventResult.handled;
     },
     child: widget.child,
   );

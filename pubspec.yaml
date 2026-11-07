@@ -31,6 +31,7 @@ flutter:
   assets:
     - assets/avatars/photos/
     - assets/fonts/OFL.txt
+    - assets/sports/stadium_header.jpg
     - assets/branding/tmdb.svg
     - assets/branding/imdb.svg
     - assets/branding/rotten_tomatoes.svg

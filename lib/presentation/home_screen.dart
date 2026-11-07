@@ -36,9 +36,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final profileKeys = <String, GlobalKey>{};
   final loadingKey = GlobalKey<ProfileLoadingState>();
   AccountProfile? selectingProfile;
-  Offset loadingOrigin = Offset.zero;
-  bool showDelayedLoading = false;
-  Timer? profileDelay;
   Future<bool> verifyProfile(
     AccountProfile profile, {
     bool managing = false,
@@ -59,29 +56,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> selectProfile(AccountProfile profile) async {
     if (selectingProfile != null || widget.session.loading) return;
     if (!await verifyProfile(profile) || !mounted) return;
-    final profileBox =
-        profileKeys[profile.id]?.currentContext?.findRenderObject()
-            as RenderBox?;
-    final bodyBox = bodyKey.currentContext?.findRenderObject() as RenderBox?;
-    loadingOrigin = profileBox != null && bodyBox != null
-        ? profileBox.localToGlobal(profileBox.size.center(Offset.zero)) -
-              bodyBox.localToGlobal(bodyBox.size.center(Offset.zero))
-        : Offset.zero;
-    setState(() {
-      selectingProfile = profile;
-      showDelayedLoading = false;
-    });
-    profileDelay = Timer(const Duration(milliseconds: 500), () {
-      if (mounted && selectingProfile != null) {
-        setState(() => showDelayedLoading = true);
-      }
-    });
+    setState(() => selectingProfile = profile);
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
     await widget.session.selectProfile(profile);
     if (!mounted) return;
     if (widget.session.error == null) await loadingKey.currentState?.finish();
-    profileDelay?.cancel();
     if (mounted) setState(() => selectingProfile = null);
   }
 
@@ -200,7 +180,6 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final node in accountFields) {
       node.dispose();
     }
-    profileDelay?.cancel();
     profilePin.dispose();
     connectionTypeFocus.dispose();
     profileName.dispose();
@@ -404,20 +383,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
         body: SizedBox.expand(
           key: bodyKey,
-          child: selectingProfile != null && !showDelayedLoading
-              ? Center(
-                  child: ProfileAvatar(
-                    selectingProfile!.avatar,
-                    size: 150,
-                    roundedSquare: true,
-                  ),
-                )
-              : selectingProfile != null
+          child: selectingProfile != null
               ? ProfileLoading(
                   key: loadingKey,
                   profile: selectingProfile!,
-                  origin: loadingOrigin,
+                  origin: Offset.zero,
                   progress: session.loadingProgress ?? 0,
+                  profileLoaded: session.profileLoaded,
+                  historyLoaded: session.historyLoaded,
+                  contentPrepared: session.contentPrepared,
                 )
               : session.loading
               ? EmptyLoading(

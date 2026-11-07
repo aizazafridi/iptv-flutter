@@ -137,6 +137,37 @@ Future<void> mount(
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   testWidgets(
+    'seek interval setting updates buttons and remote seeks without reopening playback',
+    (tester) async {
+      final engine = VodEngine();
+      await mount(tester, engine, series: false);
+      await tester.tap(find.text('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Seek Interval'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.widgetWithText(OutlinedButton, '20s'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '20s'));
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      final controls = tester.widget<VodPlayerControls>(
+        find.byType(VodPlayerControls),
+      );
+      expect(controls.seekSeconds, 20);
+      controls.onForward();
+      await tester.pumpAndSettle();
+      expect(engine.sought, const Duration(minutes: 2, seconds: 20));
+      controls.seekFocus.requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(engine.sought, const Duration(minutes: 2, seconds: 20));
+      expect(engine.opens, 1);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
     'settings expand in the same translucent drawer without reopening playback',
     (tester) async {
       final engine = VodEngine();
@@ -191,7 +222,7 @@ void main() {
       }
       await tester.pumpAndSettle();
       expect(engine.sought, isNull);
-      expect(find.textContaining('Seek to 02:30'), findsOneWidget);
+      expect(find.textContaining('Seek to 03:30'), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
       expect(engine.sought, isNull);
@@ -204,7 +235,7 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
-      expect(engine.sought, const Duration(minutes: 2, seconds: 10));
+      expect(engine.sought, const Duration(minutes: 2, seconds: 30));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -236,6 +267,20 @@ void main() {
       isFalse,
     );
     await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Exit player?'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Exit player?'), findsOneWidget);
+    await tester.tap(find.text('No'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PlayerScreen), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Exit player?'), findsOneWidget);
+    await tester.tap(find.text('Yes'));
     await tester.pumpAndSettle();
     expect(find.byType(PlayerScreen), findsNothing);
     expect(find.text('Details'), findsOneWidget);
@@ -350,6 +395,9 @@ void main() {
           );
         }
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.text('Exit player?'), findsOneWidget);
+        await tester.tap(find.text('Yes'));
         await tester.pumpAndSettle();
         expect(find.byType(PlayerScreen), findsNothing);
         expect(find.text('Details'), findsOneWidget);
@@ -537,7 +585,7 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pump(const Duration(milliseconds: 350));
       await tester.pumpAndSettle();
-      expect(engine.sought, const Duration(minutes: 2, seconds: 10));
+      expect(engine.sought, const Duration(minutes: 2, seconds: 30));
       await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlayPause);
       await tester.pumpAndSettle();
       expect(engine.pauses, 1);

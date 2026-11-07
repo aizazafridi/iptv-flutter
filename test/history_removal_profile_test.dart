@@ -13,6 +13,89 @@ import 'widget_test.dart' show FakeProvider;
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+  testWidgets(
+    'held Enter on dashboard-style history card removes without opening',
+    (tester) async {
+      var opened = 0, removed = 0;
+      final node = FocusNode();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: HistoryRemoteAction(
+              onOpen: () => opened++,
+              onRemove: () => removed++,
+              child: CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(LogicalKeyboardKey.enter): () =>
+                      opened++,
+                },
+                child: InkWell(
+                  focusNode: node,
+                  onTap: () => opened++,
+                  child: const Text('Continue Watching'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      node.requestFocus();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.enter);
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      expect(removed, 1);
+      expect(opened, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      expect(opened, 1);
+      await tester.pumpWidget(const SizedBox());
+      node.dispose();
+    },
+  );
+  testWidgets(
+    'moving focus while Enter is held cancels history action and consumes release',
+    (tester) async {
+      final first = FocusNode(), second = FocusNode();
+      var opened = 0, removed = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                for (final node in [first, second])
+                  HistoryRemoteAction(
+                    onOpen: () => opened++,
+                    onRemove: () => removed++,
+                    child: TextButton(
+                      focusNode: node,
+                      onPressed: () => opened++,
+                      child: const Text('History title'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+      first.requestFocus();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.select);
+      await tester.pump(const Duration(milliseconds: 300));
+      second.requestFocus();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.select);
+      expect(opened, 0);
+      expect(removed, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      expect(opened, 1);
+      await tester.pumpWidget(const SizedBox());
+      first.dispose();
+      second.dispose();
+    },
+  );
   test(
     'removing series removes every unfinished episode, preserves other titles and profiles',
     () async {

@@ -9,6 +9,14 @@ import '../domain/models.dart';
 
 /// Only visible recommendation cards request a fallback, after provider failure.
 class CatalogPosterArtwork extends StatefulWidget {
+  /// Floating previews observe resolved URLs without initiating metadata lookup.
+  static final resolvedRevision = ValueNotifier<int>(0);
+  static Uri? cachedUri(ContentItem item, IptvProvider provider) {
+    final key =
+        '${identityHashCode(TmdbArtworkService.configured)}:${identityHashCode(provider)}:${item.type.name}:${item.id}:${item.name}:${item.artwork}';
+    return _CatalogPosterArtworkState.resolvedFallbacks[key] ?? item.artwork;
+  }
+
   final ContentItem item;
   final TmdbArtworkService? service;
   final IptvProvider? provider;
@@ -84,6 +92,7 @@ class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
         resolvedFallbacks.remove(resolvedFallbacks.keys.first);
       }
       resolvedFallbacks[key] = poster;
+      CatalogPosterArtwork.resolvedRevision.value++;
       return poster;
     }
     if (provider == null) return null;
@@ -99,6 +108,7 @@ class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
           resolvedFallbacks.remove(resolvedFallbacks.keys.first);
         }
         resolvedFallbacks[key] = resolved;
+        CatalogPosterArtwork.resolvedRevision.value++;
       }
       return resolved;
     } catch (_) {
@@ -166,6 +176,42 @@ class _CatalogPosterArtworkState extends State<CatalogPosterArtwork> {
           providerFailure();
           return tmdb();
         },
+      );
+    },
+  );
+}
+
+/// Shares already resolved artwork only: never calls a provider or metadata API.
+class CachedPosterPreviewArtwork extends StatelessWidget {
+  final ContentItem item;
+  final IptvProvider provider;
+  const CachedPosterPreviewArtwork({
+    super.key,
+    required this.item,
+    required this.provider,
+  });
+  Widget placeholder() => const ColoredBox(
+    color: Color(0xff202833),
+    child: Center(child: Icon(Icons.movie_outlined, color: Colors.white38)),
+  );
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: CatalogPosterArtwork.resolvedRevision,
+    builder: (_, _) {
+      final uri = CatalogPosterArtwork.cachedUri(item, provider);
+      if (uri == null ||
+          !['http', 'https'].contains(uri.scheme) ||
+          uri.host.isEmpty) {
+        return placeholder();
+      }
+      return SharedArtworkImage(
+        kind: ArtworkKind.poster,
+        imageUrl: uri.toString(),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: (_, _) => placeholder(),
+        errorWidget: (_, _, _) => placeholder(),
       );
     },
   );

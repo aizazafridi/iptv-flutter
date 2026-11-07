@@ -1,118 +1,162 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../domain/models.dart';
-import 'profile_avatar.dart';
 
-/// Progress follows completed startup stages, with interpolation between them.
+/// Startup checks reflect completed work, never elapsed animation time.
 class ProfileLoading extends StatefulWidget {
   final AccountProfile profile;
   final Offset origin;
   final double progress;
+  final bool profileLoaded, historyLoaded, contentPrepared;
   const ProfileLoading({
     super.key,
     required this.profile,
     required this.origin,
     required this.progress,
+    this.profileLoaded = false,
+    this.historyLoaded = false,
+    this.contentPrepared = false,
   });
   @override
   State<ProfileLoading> createState() => ProfileLoadingState();
 }
 
-class ProfileLoadingState extends State<ProfileLoading>
-    with SingleTickerProviderStateMixin {
-  late final progress = AnimationController(vsync: this, value: 0);
-  @override
-  void initState() {
-    super.initState();
-    if (widget.origin.distance < 0.5) motionFinished.complete();
-    advance();
-  }
-
-  final motionFinished = Completer<void>();
-  bool finishing = false;
-  void advance() {
-    if (finishing) return;
-    final target = widget.progress.clamp(progress.value, 1.0);
-    progress.animateTo(
-      target,
-      duration: const Duration(milliseconds: 700),
-      curve: Curves.easeInOutCubic,
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant ProfileLoading oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.progress != widget.progress) advance();
-  }
-
+class ProfileLoadingState extends State<ProfileLoading> {
   Future<void> finish() async {
-    finishing = true;
-    try {
-      await progress
-          .animateTo(
-            1,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOutCubic,
-          )
-          .orCancel;
-      await motionFinished.future;
-    } on TickerCanceled {
-      /* The screen was closed during loading. */
-    }
+    // Let the final completed check render before entering the dashboard.
+    await WidgetsBinding.instance.endOfFrame;
   }
 
-  @override
-  void dispose() {
-    if (!motionFinished.isCompleted) motionFinished.complete();
-    progress.dispose();
-    super.dispose();
-  }
+  Widget stage(String label, bool complete, bool active) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 9),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 20,
+          height: 20,
+          child: complete
+              ? const Icon(
+                  Icons.check_circle,
+                  size: 20,
+                  color: Color(0xFF548FFF),
+                )
+              : active
+              ? const CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Color(0xFF8CBDFF),
+                )
+              : const Icon(
+                  Icons.circle_outlined,
+                  size: 20,
+                  color: Color(0xFF69788F),
+                ),
+        ),
+        const SizedBox(width: 20),
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFFE3E9F3),
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: TweenAnimationBuilder<Offset>(
-      tween: Tween(begin: widget.origin, end: Offset.zero),
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOutSine,
-      onEnd: () {
-        if (!motionFinished.isCompleted) motionFinished.complete();
-      },
-      builder: (_, offset, child) =>
-          Transform.translate(offset: offset, child: child),
-      child: SizedBox(
-        width: 280,
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const BoxDecoration(
+      gradient: RadialGradient(
+        center: Alignment(0.3, 0.1),
+        radius: 1.15,
+        colors: [Color(0xFF102442), Color(0xFF050C1B), Color(0xFF020611)],
+      ),
+    ),
+    child: Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ProfileAvatar(
-              widget.profile.avatar,
-              size: 150,
-              roundedSquare: true,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              widget.profile.name,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 24),
-            AnimatedBuilder(
-              animation: progress,
-              builder: (_, _) => Column(
+            SizedBox(
+              width: 148,
+              height: 148,
+              child: Stack(
+                alignment: Alignment.center,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: LinearProgressIndicator(
-                      value: progress.value,
-                      minHeight: 6,
-                      semanticsLabel: 'Loading profile',
+                  Container(
+                    width: 136,
+                    height: 136,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(
+                            0xFF2687FF,
+                          ).withValues(alpha: 0.12),
+                          blurRadius: 24,
+                          spreadRadius: 3,
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  Text(
-                    'Loading ${(progress.value * 100).floor()}%',
-                    style: const TextStyle(fontSize: 13),
+                  const Positioned.fill(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF67B6FF),
+                      backgroundColor: Color(0xFF10233E),
+                      semanticsLabel: 'Preparing your profile',
+                    ),
+                  ),
+                  const Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: 'St',
+                          style: TextStyle(color: Color(0xFF579DFF)),
+                        ),
+                        TextSpan(
+                          text: 'reamora',
+                          style: TextStyle(color: Color(0xFFE7F0FF)),
+                        ),
+                      ],
+                    ),
+                    style: TextStyle(fontSize: 25, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 26),
+            const Text(
+              'Getting your experience ready...',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 25),
+            SizedBox(
+              width: 245,
+              child: Column(
+                children: [
+                  stage(
+                    'Loading profile',
+                    widget.profileLoaded,
+                    !widget.profileLoaded,
+                  ),
+                  stage(
+                    'Syncing watch history',
+                    widget.historyLoaded,
+                    widget.profileLoaded && !widget.historyLoaded,
+                  ),
+                  stage(
+                    'Preparing content',
+                    widget.contentPrepared,
+                    widget.historyLoaded && !widget.contentPrepared,
                   ),
                 ],
               ),
