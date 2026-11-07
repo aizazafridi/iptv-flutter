@@ -9,6 +9,7 @@ class PlayerSettingsDrawer extends StatefulWidget {
   final bool allowSpeed;
   final Future<void> Function()? onRecord;
   final bool recording;
+  final VoidCallback? onDiagnostics, onPlaybackOptions;
   final Future<void> Function(bool) onAutoplay;
   final Future<void> Function(double) onRate;
   final Future<void> Function(int) onSeek;
@@ -16,6 +17,8 @@ class PlayerSettingsDrawer extends StatefulWidget {
   const PlayerSettingsDrawer({
     super.key,
     this.onRecord,
+    this.onDiagnostics,
+    this.onPlaybackOptions,
     this.recording = false,
     required this.autoplay,
     required this.rate,
@@ -264,6 +267,18 @@ class _PlayerSettingsDrawerState extends State<PlayerSettingsDrawer> {
             () => apply(widget.onRecord!, () => recording = !recording),
           ),
         ]),
+      if (widget.onPlaybackOptions != null)
+        TextButton.icon(
+          onPressed: widget.onPlaybackOptions,
+          icon: const Icon(Icons.video_settings),
+          label: const Text('Streams and quality'),
+        ),
+      if (widget.onDiagnostics != null)
+        TextButton.icon(
+          onPressed: widget.onDiagnostics,
+          icon: const Icon(Icons.info_outline),
+          label: const Text('Playback diagnostics'),
+        ),
       if (error != null)
         Text(
           error!,

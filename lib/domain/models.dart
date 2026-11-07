@@ -120,16 +120,24 @@ class SeriesDetails {
   const SeriesDetails(this.details, this.episodes);
 }
 
+class PlaybackAlternative {
+  final String label;
+  final PlaybackSource source;
+  const PlaybackAlternative(this.label, this.source);
+}
+
 class PlaybackSource {
   final Uri uri;
   final String title;
   final bool isLive;
   final Map<String, String> headers;
+  final List<PlaybackAlternative> alternatives;
   const PlaybackSource({
     required this.uri,
     required this.title,
     this.isLive = false,
     this.headers = const {},
+    this.alternatives = const [],
   });
 }
 

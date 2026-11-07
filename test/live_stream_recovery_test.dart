@@ -67,11 +67,11 @@ void main() {
       await tester.pump();
       expect(engine.opens, 2);
       expect(engine.pauses, 0);
-      expect(find.text('Reconnecting channel...'), findsOneWidget);
+      expect(find.text('Connecting...'), findsOneWidget);
       engine.frames.add(const Duration(seconds: 2));
       await tester.pump();
       await tester.pump();
-      expect(find.text('Reconnecting channel...'), findsNothing);
+      expect(find.text('Connecting...'), findsNothing);
       await tester.tap(find.byIcon(Icons.pause));
       await tester.pump();
       expect(engine.pauses, 1);

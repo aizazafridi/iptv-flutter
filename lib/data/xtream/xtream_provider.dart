@@ -9,6 +9,7 @@ class XtreamProvider
   @override
   int? maxConcurrentStreams;
   final XtreamClient client;
+  final _directSources = <String, Uri>{};
   @override
   final String displayName;
   XtreamProvider(this.client, {this.displayName = 'Xtream Codes'});
@@ -137,6 +138,12 @@ class XtreamProvider
         .whereType<Map<String, dynamic>>()
         .where((row) => _text(row[idField]).trim().isNotEmpty)
         .map((row) {
+          final direct = _image(row['direct_source']);
+          if (direct != null) {
+            _directSources['${type.name}:${row[idField]}'] = direct;
+          } else {
+            _directSources.remove('${type.name}:${row[idField]}');
+          }
           return ContentItem(
             id: _required(
               row,
@@ -222,6 +229,10 @@ class XtreamProvider
       ),
     );
     final movieData = _map(data['movie_data']);
+    final direct = _image(movieData['direct_source']);
+    if (direct != null) {
+      _directSources['${movie.type.name}:${movie.id}'] = direct;
+    }
     final item = ContentItem(
       id: movie.id,
       name: movie.name,
@@ -286,6 +297,8 @@ class XtreamProvider
         final row = rawEpisode;
         if (_text(row['id']).isEmpty) continue;
         final episodeInfo = row['info'] is Map ? row['info'] as Map : const {};
+        final direct = _image(row['direct_source']);
+        if (direct != null) _directSources['episode:${row['id']}'] = direct;
         final seconds = _number(episodeInfo['duration_secs']);
         final duration = _text(episodeInfo['duration']).isNotEmpty
             ? _text(episodeInfo['duration'])
@@ -336,7 +349,7 @@ class XtreamProvider
       ContentType.movies => 'movie',
       ContentType.series => 'series',
     };
-    return PlaybackSource(
+    final primary = PlaybackSource(
       uri: client.stream(
         kind,
         episode?.id ?? item.id,
@@ -349,6 +362,27 @@ class XtreamProvider
           : '${item.name} · S${episode.season} E${episode.number} · ${episode.title}',
       isLive: item.type == ContentType.live,
       headers: const {'User-Agent': 'VLC/3.0.21 LibVLC/3.0.21'},
+    );
+    final direct = episode == null
+        ? _directSources['${item.type.name}:${item.id}']
+        : _directSources['episode:${episode.id}'];
+    return PlaybackSource(
+      uri: primary.uri,
+      title: primary.title,
+      isLive: primary.isLive,
+      headers: primary.headers,
+      alternatives: [
+        if (direct != null && direct != primary.uri)
+          PlaybackAlternative(
+            'Provider alternate stream',
+            PlaybackSource(
+              uri: direct,
+              title: primary.title,
+              isLive: primary.isLive,
+              headers: primary.headers,
+            ),
+          ),
+      ],
     );
   }
 
@@ -528,5 +562,8 @@ class XtreamProvider
   }
 
   @override
-  void dispose() => client.dispose();
+  void dispose() {
+    _directSources.clear();
+    client.dispose();
+  }
 }

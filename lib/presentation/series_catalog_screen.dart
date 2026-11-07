@@ -1734,11 +1734,12 @@ class _FeaturedHeroState extends State<_FeaturedHero> {
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           colors: [
-                            Color(0xff0b1018),
-                            Color(0x880b1018),
+                            Color(0xdd0b1018),
+                            Color(0x660b1018),
+                            Color(0x000b1018),
                             Color(0x000b1018),
                           ],
-                          stops: [0, .4, 1],
+                          stops: [0, .32, .62, 1],
                         ),
                       ),
                     ),

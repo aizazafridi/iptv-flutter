@@ -1,3 +1,4 @@
+import '../playback/playback_diagnostics.dart';
 import '../application/live_zap_channels.dart';
 import 'live_channel_browser.dart' show LiveChannelBrowserSelection;
 import 'player_settings_drawer.dart';
@@ -87,7 +88,8 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen>
+    with WidgetsBindingObserver {
   Episode? changedEpisode;
   Episode? get currentEpisode => changedEpisode ?? widget.episode;
   Episode? get nextEpisode {
@@ -164,6 +166,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       title: 'Player Settings',
       settings: true,
       builder: (_) => PlayerSettingsDrawer(
+        onDiagnostics: showPlaybackDiagnostics,
+        onPlaybackOptions: qualities.isEmpty && advertisedAlternatives.isEmpty
+            ? null
+            : showStreamChoices,
         recording: videoRecorder?.recording ?? false,
         onRecord: videoRecorder == null || videoRecorder!.busy
             ? null
@@ -577,20 +583,285 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  bool userPausedPlayback = false;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final ended =
+        !source.isLive && duration > Duration.zero && position >= duration;
+    liveRecovery?.setPaused(
+      state != AppLifecycleState.resumed || userPausedPlayback || ended,
+    );
+  }
+
+  final diagnosticText = ValueNotifier<String>(
+    'Reading playback information...',
+  );
+  Timer? diagnosticTimer;
+  bool readingDiagnostics = false;
+  String lastPlaybackFailure = 'None';
+  int recoveryAttempts = 0;
+  DateTime? bufferingSince;
+  Duration totalBuffering = Duration.zero;
+  final retryFocus = FocusNode(debugLabel: 'playback recovery retry');
+  List<PlaybackAlternative> advertisedAlternatives = [];
+  List<PlaybackQuality> get qualities => engine is QualityPlaybackEngine
+      ? (engine as QualityPlaybackEngine).videoQualities
+      : const [];
+
+  Future<void> updateDiagnostics() async {
+    if (readingDiagnostics || !mounted) return;
+    readingDiagnostics = true;
+    final current = source.uri;
+    try {
+      final info = engine is DiagnosticPlaybackEngine
+          ? await (engine as DiagnosticPlaybackEngine).readDiagnostics()
+          : const PlaybackDiagnostics();
+      if (!mounted || source.uri != current) return;
+      if (info.videoPosition != null && playing && !buffering && !starting) {
+        liveRecovery?.videoProgress(info.videoPosition!);
+      }
+      final buffered =
+          totalBuffering +
+          (bufferingSince == null
+              ? Duration.zero
+              : DateTime.now().difference(bufferingSince!));
+      diagnosticText.value = [
+        'State: ${starting
+            ? 'Connecting'
+            : buffering
+            ? 'Buffering'
+            : playing
+            ? 'Playing'
+            : 'Paused/stopped'}',
+        'Recovery attempts: $recoveryAttempts / 3',
+        'Buffering time: ${buffered.inSeconds}s',
+        'Buffered ahead: ${info.bufferSeconds == null ? 'Unavailable' : '${info.bufferSeconds!.toStringAsFixed(1)}s'}',
+        'Video codec: ${info.videoCodec ?? 'Unavailable'}',
+        'Audio codec: ${info.audioCodec ?? 'Unavailable'}',
+        'Resolution: ${info.width == null || info.height == null ? 'Unavailable' : '${info.width} x ${info.height}'}',
+        'Frame rate: ${info.fps?.toStringAsFixed(1) ?? 'Unavailable'}',
+        'Decoder: ${info.decoder ?? 'Unavailable'}',
+        'Video-frame monitoring: ${info.videoPosition == null ? 'Unavailable; using playback progress' : 'Available'}',
+        'Last error: $lastPlaybackFailure',
+      ].join('\n');
+    } catch (_) {
+      // An optional telemetry property must never interrupt playback.
+    } finally {
+      readingDiagnostics = false;
+    }
+  }
+
+  Future<void> showPlaybackDiagnostics() async {
+    controlsTimer?.cancel();
+    unawaited(updateDiagnostics());
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Playback diagnostics'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: ValueListenableBuilder<String>(
+              valueListenable: diagnosticText,
+              builder: (_, value, _) => Text(
+                value,
+                style: const TextStyle(fontSize: 14, height: 1.6),
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          if (advertisedAlternatives.isNotEmpty || qualities.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                unawaited(showStreamChoices());
+              },
+              child: const Text('Playback options'),
+            ),
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    if (mounted && !vodDrawerOpen) revealControls();
+  }
+
+  bool recoveryActionBusy = false;
+  Future<void> runRecoveryAction(Future<void> Function() action) async {
+    if (!mounted || recoveryActionBusy) return;
+    setState(() => recoveryActionBusy = true);
+    liveRecovery?.setPaused(true);
+    try {
+      await action();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          error = 'Could not change playback. Please retry.';
+          starting = false;
+        });
+      }
+    } finally {
+      if (mounted) {
+        liveRecovery?.setPaused(!playing && !starting);
+        setState(() => recoveryActionBusy = false);
+      }
+    }
+  }
+
+  Future<void> retryPlayback() => runRecoveryAction(retryPlaybackNow);
+  Future<void> showStreamChoices() => runRecoveryAction(chooseStreamNow);
+
+  Future<void> retryPlaybackNow() async {
+    await liveRecovery?.close();
+    if (!mounted) return;
+    setupLiveRecovery();
+    await start();
+  }
+
+  Future<void> chooseStreamNow() async {
+    final options = qualities;
+    final alternatives = advertisedAlternatives
+        .where((a) => a.source.uri != source.uri)
+        .toList();
+    final allAlternatives = advertisedAlternatives;
+    if (options.isEmpty && alternatives.isEmpty) return;
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Playback options'),
+        children: [
+          for (final entry in alternatives.indexed)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'alternate:${entry.$1}'),
+              child: Text(entry.$2.label),
+            ),
+          for (final quality in options)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'quality:${quality.id}'),
+              child: Text(quality.label),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || selected == null) return;
+    final resume = position;
+    try {
+      await liveRecovery?.close();
+      if (!mounted) return;
+      if (selected.startsWith('alternate:')) {
+        final next = alternatives[int.parse(selected.substring(10))].source;
+        setState(() {
+          if (source.isLive) {
+            liveSource = next;
+          } else {
+            vodSource = next;
+          }
+        });
+        setupLiveRecovery();
+        advertisedAlternatives = allAlternatives;
+        await start();
+        if (!source.isLive && resume > Duration.zero) await seek(resume);
+      } else {
+        await (engine as QualityPlaybackEngine).selectVideoQuality(
+          selected.substring(8),
+        );
+        if (!mounted) return;
+        setupLiveRecovery();
+        advertisedAlternatives = allAlternatives;
+        liveRecovery?.setPaused(!playing);
+        setState(() {
+          error = null;
+          reconnectingLive = false;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        error = 'Could not use this playback option. Try another stream.';
+        starting = false;
+      });
+    }
+  }
+
+  Widget recoveryChoices() => Wrap(
+    alignment: WrapAlignment.center,
+    spacing: 10,
+    runSpacing: 8,
+    children: [
+      FilledButton(
+        focusNode: retryFocus,
+        autofocus: true,
+        onPressed: recoveryActionBusy ? null : retryPlayback,
+        child: const Text('Retry playback'),
+      ),
+      if (advertisedAlternatives.isNotEmpty || qualities.isNotEmpty)
+        OutlinedButton(
+          onPressed: recoveryActionBusy ? null : showStreamChoices,
+          child: Text(
+            advertisedAlternatives.isEmpty
+                ? 'Choose quality'
+                : 'Try alternate stream / quality',
+          ),
+        ),
+      OutlinedButton(
+        onPressed: showPlaybackDiagnostics,
+        child: const Text('Diagnostics'),
+      ),
+      TextButton(onPressed: confirmLiveExit, child: const Text('Back')),
+    ],
+  );
+
   LiveStreamRecovery? liveRecovery;
   bool reconnectingLive = false;
   void setupLiveRecovery() {
-    if (!source.isLive) return;
+    advertisedAlternatives = source.alternatives.isEmpty
+        ? []
+        : [
+            PlaybackAlternative('Original stream', source),
+            ...source.alternatives,
+          ];
+    recoveryAttempts = 0;
+    lastPlaybackFailure = 'None';
+    bufferingSince = null;
+    totalBuffering = Duration.zero;
     liveRecovery = LiveStreamRecovery(
       reconnect: () async {
         await finishLiveRecording();
+        final resume = position;
         await engine.open(source);
+        if (!source.isLive && resume > Duration.zero) await engine.seek(resume);
+      },
+      onAttempt: (attempt) {
+        recoveryAttempts = attempt;
+        unawaited(updateDiagnostics());
+      },
+      onExhausted: () {
+        if (!mounted) return;
+        setState(() {
+          error = 'Playback could not be restored. $lastPlaybackFailure';
+          starting = false;
+          reconnectingLive = false;
+          controlsVisible = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+            retryFocus.requestFocus();
+          }
+        });
       },
       onRecovering: (value) {
         if (mounted) {
           setState(() {
             reconnectingLive = value;
-            error = null;
+            if (value) error = null;
           });
         }
       },
@@ -676,7 +947,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> togglePlayback() async {
     if (videoRecorder?.recording == true) await toggleFileRecording();
-    liveRecovery?.setPaused(playing);
+    userPausedPlayback = playing;
+    liveRecovery?.setPaused(userPausedPlayback);
     await engine.togglePause();
   }
 
@@ -1177,6 +1449,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     guideVisible = widget.initialGuide;
     if (liveTvMode || widget.initialFullscreen || !source.isLive) {
       fullscreen = true;
@@ -1193,6 +1466,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       subscriptions.add(
         (engine as CompletionPlaybackEngine).completed.listen((completed) {
           if (source.isLive && completed) liveRecovery?.failed();
+          if (!source.isLive && completed) liveRecovery?.setPaused(true);
           if (!mounted ||
               source.isLive ||
               nextEpisode == null ||
@@ -1213,6 +1487,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final progress = engine as BufferingPlaybackEngine;
       subscriptions.add(
         progress.buffering.listen((value) {
+          if (value && bufferingSince == null) bufferingSince = DateTime.now();
+          if (!value && bufferingSince != null) {
+            totalBuffering += DateTime.now().difference(bufferingSince!);
+            bufferingSince = null;
+          }
           if (mounted) setState(() => buffering = value);
         }),
       );
@@ -1241,7 +1520,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
           liveRecovery?.progress(value);
           if (value != position) {
             playbackProgressVersion++;
-            if (error != null) setState(() => error = null);
+            if (error != null && liveRecovery?.exhausted != true) {
+              setState(() => error = null);
+            }
           }
           position = value;
           refreshUpNext();
@@ -1287,14 +1568,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     subscriptions.add(
       engine.playing.listen((value) {
-        if (value) rememberLiveChannel();
-        if (!value && !starting && !buffering) liveRecovery?.failed();
+        if (value) {
+          userPausedPlayback = false;
+          rememberLiveChannel();
+        }
+        if (!value &&
+            !starting &&
+            !buffering &&
+            (source.isLive ||
+                duration == Duration.zero ||
+                position < duration - const Duration(seconds: 1))) {
+          liveRecovery?.failed();
+        }
         if (mounted) {
           setState(() {
             playing = value;
             if (value) {
               starting = false;
-              error = null;
+              if (liveRecovery?.exhausted != true) error = null;
             }
           });
           if (!source.isLive) revealControls();
@@ -1303,20 +1594,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     subscriptions.add(
       engine.errors.listen((value) {
+        final failure = PlaybackFailure.from(value);
+        lastPlaybackFailure = failure.message;
+        unawaited(updateDiagnostics());
+        if (!failure.retryable) {
+          if (failure.message.contains('codec')) {
+            playbackErrorTimer?.cancel();
+            final reported = playbackProgressVersion;
+            playbackErrorTimer = Timer(const Duration(seconds: 3), () {
+              if (mounted && reported == playbackProgressVersion) {
+                liveRecovery?.stopAutomaticRecovery();
+              }
+            });
+          } else {
+            liveRecovery?.stopAutomaticRecovery();
+          }
+          return;
+        }
         if (source.isLive) {
           liveRecovery?.failed();
           return;
         }
         playbackErrorTimer?.cancel();
         final reported = playbackProgressVersion;
-        // Decoder warnings can occur while live video continues normally.
-        // Show an error only if playback fails to make progress afterwards.
         playbackErrorTimer = Timer(const Duration(seconds: 3), () {
           if (!mounted || playbackProgressVersion != reported) return;
-          setState(() {
-            error = value;
-            starting = false;
-          });
+          liveRecovery?.failed();
         });
       }),
     );
@@ -1354,6 +1657,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
       });
     }
+    diagnosticTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (WidgetsBinding.instance.lifecycleState == null ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        unawaited(updateDiagnostics());
+      }
+    });
     start();
   }
 
@@ -1393,6 +1702,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    diagnosticTimer?.cancel();
+    diagnosticText.dispose();
+    retryFocus.dispose();
     upNextScope.dispose();
     upNextFocus.dispose();
     HardwareKeyboard.instance.removeHandler(remoteKeys);
@@ -2061,6 +2374,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                           ),
                         ),
+                      if (!source.isLive &&
+                          controlsVisible &&
+                          !guideVisible &&
+                          !vodDrawerOpen &&
+                          error == null)
+                        Positioned(
+                          top: 12,
+                          right: 12,
+                          child: IconButton(
+                            tooltip: 'Playback diagnostics',
+                            onPressed: showPlaybackDiagnostics,
+                            icon: const Icon(
+                              Icons.info_outline,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
                       if (error != null)
                         Center(
                           child: Container(
@@ -2071,10 +2401,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               children: [
                                 Text(error!, textAlign: TextAlign.center),
                                 const SizedBox(height: 16),
-                                FilledButton(
-                                  onPressed: start,
-                                  child: const Text('Retry playback'),
-                                ),
+                                recoveryChoices(),
                               ],
                             ),
                           ),

@@ -1,10 +1,16 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-/// Reopens failed live streams with bounded backoff until media advances again.
+/// Reopens stalled/failed playback with bounded backoff and a retry budget.
 class LiveStreamRecovery {
   final Future<void> Function() reconnect;
   final void Function(bool) onRecovering;
+  final void Function()? onExhausted;
+  final void Function(int)? onAttempt;
+  final int maxAttempts;
+  bool _exhausted = false, _videoMonitoring = false;
+  int get attempts => _attempts;
+  bool get exhausted => _exhausted;
   late final Timer _watchdog;
   Timer? _retry, _settling;
   Duration _healthyProgress = Duration.zero;
@@ -12,9 +18,16 @@ class LiveStreamRecovery {
   bool _closed = false, _paused = false, _recovering = false;
   int _quietTicks = 0, _attempts = 0, _generation = 0;
   Duration? _position;
-  LiveStreamRecovery({required this.reconnect, required this.onRecovering}) {
+  LiveStreamRecovery({
+    required this.reconnect,
+    required this.onRecovering,
+    this.onExhausted,
+    this.onAttempt,
+    this.maxAttempts = 3,
+  }) {
     _watchdog = Timer.periodic(const Duration(seconds: 2), (_) {
       if (_closed ||
+          _exhausted ||
           _paused ||
           _retry != null ||
           _operation != null ||
@@ -30,7 +43,17 @@ class LiveStreamRecovery {
     onRecovering(value);
   }
 
+  void videoProgress(Duration position) {
+    if (position <= Duration.zero) return;
+    _videoMonitoring = true;
+    _progress(position);
+  }
+
   void progress(Duration position) {
+    if (!_videoMonitoring) _progress(position);
+  }
+
+  void _progress(Duration position) {
     if (_closed ||
         _paused ||
         position <= Duration.zero ||
@@ -67,26 +90,36 @@ class LiveStreamRecovery {
 
   void failed() {
     if (_closed ||
+        _exhausted ||
         _paused ||
         _retry != null ||
         _operation != null ||
         _settling != null) {
       return;
     }
+    if (_attempts >= maxAttempts) {
+      stopAutomaticRecovery();
+      return;
+    }
     final generation = _generation;
     final seconds = math.min(30, 2 * (1 << math.min(_attempts, 4)));
     _retry = Timer(Duration(seconds: seconds), () {
       _retry = null;
-      if (_closed || _paused || generation != _generation) return;
+      if (_closed || _exhausted || _paused || generation != _generation) return;
       _status(true);
       _operation = _reopen().whenComplete(() {
         _operation = null;
         // Opening returns before the decoder has filled its network buffer.
         // Give this connection a real startup window before trying again.
-        if (!_closed && !_paused && generation == _generation) {
+        if (!_closed && !_exhausted && !_paused && generation == _generation) {
           _settling = Timer(const Duration(seconds: 30), () {
             _settling = null;
-            if (!_closed && !_paused && generation == _generation) failed();
+            if (!_closed &&
+                !_exhausted &&
+                !_paused &&
+                generation == _generation) {
+              failed();
+            }
           });
         }
       });
@@ -95,6 +128,7 @@ class LiveStreamRecovery {
 
   Future<void> _reopen() async {
     _attempts++;
+    onAttempt?.call(_attempts);
     _healthyProgress = Duration.zero;
     _quietTicks = 0;
     try {
@@ -102,6 +136,17 @@ class LiveStreamRecovery {
     } catch (_) {
       /* Keep retrying without exposing stream URLs. */
     }
+  }
+
+  void stopAutomaticRecovery() {
+    if (_closed || _exhausted) return;
+    _exhausted = true;
+    _retry?.cancel();
+    _retry = null;
+    _settling?.cancel();
+    _settling = null;
+    _status(false);
+    onExhausted?.call();
   }
 
   Future<void> close() async {

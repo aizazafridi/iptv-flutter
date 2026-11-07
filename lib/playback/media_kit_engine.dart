@@ -1,3 +1,4 @@
+import 'playback_diagnostics.dart';
 import 'ffmpeg_video_capture.dart';
 import 'video_recording_engine.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,8 @@ import 'frame_preview.dart';
 class MediaKitEngine
     implements
         PlaybackEngine,
+        DiagnosticPlaybackEngine,
+        QualityPlaybackEngine,
         AudioPlaybackEngine,
         AudioTrackPlaybackEngine,
         CompletionPlaybackEngine,
@@ -139,9 +142,8 @@ class MediaKitEngine
   @override
   Stream<bool> get playing => _player.stream.playing;
   @override
-  Stream<String> get errors => _player.stream.error.map(
-    (_) => 'Playback failed. Check your connection and content availability.',
-  );
+  Stream<String> get errors =>
+      _player.stream.error.map((raw) => PlaybackFailure.from(raw).message);
   @override
   Stream<List<SubtitleOption>> get subtitles => _player.stream.tracks.map(
     (tracks) => tracks.subtitle
@@ -163,6 +165,92 @@ class MediaKitEngine
         )
         .toList(),
   );
+  bool? _videoPtsSupported;
+  @override
+  Future<PlaybackDiagnostics> readDiagnostics() async {
+    final state = _player.state;
+    final videos = state.tracks.video.where(
+      (t) =>
+          t.id != 'auto' &&
+          t.id != 'no' &&
+          t.image != true &&
+          t.albumart != true,
+    );
+    final video =
+        videos.where((t) => t.id == state.track.video.id).firstOrNull ??
+        videos.firstOrNull;
+    final audio = state.tracks.audio
+        .where((t) => t.id == state.track.audio.id)
+        .firstOrNull;
+    double? buffer, pts;
+    final native = _player.platform;
+    if (!_disposed && native is NativePlayer) {
+      try {
+        buffer = double.tryParse(
+          await native.getProperty('demuxer-cache-duration'),
+        );
+      } catch (_) {}
+      if (_videoPtsSupported != false && video != null) {
+        try {
+          pts = double.tryParse(await native.getProperty('video-pts'));
+          if (pts != null) _videoPtsSupported = true;
+        } catch (_) {
+          _videoPtsSupported = false;
+        }
+      }
+    }
+    return PlaybackDiagnostics(
+      videoCodec: video?.codec,
+      audioCodec: audio?.codec,
+      decoder: video?.decoder,
+      width: state.width ?? video?.w,
+      height: state.height ?? video?.h,
+      fps: video?.fps,
+      bufferSeconds: buffer,
+      buffering: state.buffering,
+      videoPosition: pts != null && pts.isFinite && pts >= 0
+          ? Duration(milliseconds: (pts * 1000).round())
+          : null,
+    );
+  }
+
+  @override
+  List<PlaybackQuality> get videoQualities {
+    final tracks = _player.state.tracks.video
+        .where(
+          (t) =>
+              t.id != 'auto' &&
+              t.id != 'no' &&
+              t.image != true &&
+              t.albumart != true,
+        )
+        .toList();
+    if (tracks.length < 2 ||
+        (tracks.map((t) => t.h).whereType<int>().toSet().length < 2 &&
+            tracks.map((t) => t.bitrate).whereType<int>().toSet().length < 2)) {
+      return [];
+    }
+    return tracks
+        .map(
+          (t) => PlaybackQuality(
+            t.id,
+            '${t.h == null ? 'Video track ${t.id}' : '${t.h}p'}${t.bitrate == null ? '' : ' - ${(t.bitrate! / 1000).round()} kbps'}',
+            height: t.h,
+            bitrate: t.bitrate,
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  String get selectedVideoQuality => _player.state.track.video.id;
+  @override
+  Future<void> selectVideoQuality(String id) => _player.setVideoTrack(
+    _player.state.tracks.video.firstWhere(
+      (t) => t.id == id && t.id != 'no' && t.id != 'auto',
+    ),
+  );
+
   @override
   Future<void> selectSubtitle(String id) => _player.setSubtitleTrack(
     id == 'no'
