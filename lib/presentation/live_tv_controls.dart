@@ -91,7 +91,9 @@ class LiveTvControls extends StatefulWidget {
   final VoidCallback onChannels, onGuide, onActivity, onOverlayOpened;
   final VoidCallback? onAspect, onVolume;
   final bool muted;
-  final VoidCallback? onRecord, onSplit, onCatchUp;
+  final VoidCallback? onRecord, onSplit, onCatchUp, onCaptions;
+  final bool captionsEnabled;
+  final FocusNode? captionFocus;
   final Widget? health;
   final bool playing, recording;
   final FocusNode primaryFocus;
@@ -113,6 +115,9 @@ class LiveTvControls extends StatefulWidget {
     this.onRecord,
     this.onSplit,
     this.onCatchUp,
+    this.onCaptions,
+    this.captionsEnabled = false,
+    this.captionFocus,
     this.health,
     required this.playing,
     required this.recording,
@@ -169,6 +174,7 @@ class _LiveTvControlsState extends State<LiveTvControls> {
   }) {
     final label = switch (title) {
       'Search channels' => 'Search',
+      'Closed captions' => 'CC',
       'Multi View' => 'Multi View',
       'Mute' || 'Unmute' => 'Audio',
       'Add to My list' || 'Remove from My list' => 'My List',
@@ -469,6 +475,17 @@ class _LiveTvControlsState extends State<LiveTvControls> {
                     ),
                     widget.onVolume,
                   ),
+                  if (widget.onCaptions != null)
+                    action(
+                      'Closed captions',
+                      Icon(
+                        widget.captionsEnabled
+                            ? Icons.closed_caption
+                            : Icons.closed_caption_outlined,
+                      ),
+                      widget.onCaptions,
+                      focus: widget.captionFocus,
+                    ),
                   action(
                     'Catch-up',
                     const Icon(Icons.history),

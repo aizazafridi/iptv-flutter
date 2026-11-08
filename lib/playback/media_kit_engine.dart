@@ -153,14 +153,16 @@ class MediaKitEngine
             track.id,
             [track.title, track.language]
                     .whereType<String>()
-                    .where((text) => text.isNotEmpty)
-                    .join(' · ')
+                    .where((s) => s.isNotEmpty)
+                    .join(' - ')
                     .isEmpty
-                ? 'Subtitle ${track.id}'
-                : [track.title, track.language]
-                      .whereType<String>()
-                      .where((text) => text.isNotEmpty)
-                      .join(' · '),
+                ? '${track.codec == 'eia_608' ? 'CC' : 'Subtitle'} ${track.id}'
+                : [
+                    track.title,
+                    track.language,
+                  ].whereType<String>().where((s) => s.isNotEmpty).join(' - '),
+            language: track.language,
+            codec: track.codec,
           ),
         )
         .toList(),
@@ -252,13 +254,35 @@ class MediaKitEngine
   );
 
   @override
-  Future<void> selectSubtitle(String id) => _player.setSubtitleTrack(
-    id == 'no'
+  Future<void> selectSubtitle(String id) async {
+    final track = id == 'no'
         ? SubtitleTrack.no()
         : id == 'auto'
         ? SubtitleTrack.auto()
-        : _player.state.tracks.subtitle.firstWhere((track) => track.id == id),
-  );
+        : _player.state.tracks.subtitle.firstWhere((track) => track.id == id);
+    await _player.setSubtitleTrack(track);
+    // media_kit updates its Dart track state even when mpv rejects a decoder.
+    // Verify the native selection rather than reporting CC as enabled falsely.
+    final captionCodec = track.codec == 'eia_608' || track.codec == 'cea_708';
+    final native = _player.platform;
+    if (_source?.isLive == true &&
+        id != 'no' &&
+        (captionCodec || id == 'auto') &&
+        native is NativePlayer) {
+      String? actual;
+      try {
+        actual = await native.getProperty('sid');
+      } catch (_) {
+        /* Optional on some engines. */
+      }
+      if (actual == 'no') {
+        throw const ProviderException(
+          "The player could not start this channel's closed-caption decoder.",
+        );
+      }
+    }
+  }
+
   @override
   List<SubtitleOption> get currentAudioTracks => _player.state.tracks.audio
       .where((track) => track.id != 'no' && track.id != 'auto')

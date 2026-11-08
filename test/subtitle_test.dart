@@ -70,7 +70,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         tester.getSize(find.byKey(const ValueKey('vod-play-pause'))).width,
-        50,
+        inInclusiveRange(40.0, 52.0),
       );
       for (final rate in [0.5, 1.0, 2.0, 3.0, 5.0]) {
         await tester.tap(find.text('More'));

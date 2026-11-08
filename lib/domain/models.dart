@@ -169,7 +169,8 @@ class EpgProgramme {
 
 class SubtitleOption {
   final String id, label;
-  const SubtitleOption(this.id, this.label);
+  final String? language, codec;
+  const SubtitleOption(this.id, this.label, {this.language, this.codec});
 }
 
 const profileAvatarCount = 8;

@@ -1,3 +1,4 @@
+import '../application/live_captions.dart';
 import '../playback/playback_diagnostics.dart';
 import '../application/live_zap_channels.dart';
 import 'live_channel_browser.dart' show LiveChannelBrowserSelection;
@@ -836,7 +837,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       reconnect: () async {
         await finishLiveRecording();
         final resume = position;
-        await engine.open(source);
+        await openPlaybackSource(source);
         if (!source.isLive && resume > Duration.zero) await engine.seek(resume);
       },
       onAttempt: (attempt) {
@@ -1048,7 +1049,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       setupVideoRecorder();
       setupLiveRecovery();
       unawaited(checkCatchUp());
-      await engine.open(next);
+      await openPlaybackSource(next);
       return true;
     } catch (_) {
       if (mounted) {
@@ -1394,12 +1395,140 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   String? error;
   Timer? playbackErrorTimer;
+  late final LiveCaptions liveCaptions;
+  final liveCaptionFocus = FocusNode(debugLabel: 'live closed captions');
+  String get captionProfile =>
+      widget.history?.scope ??
+      (widget.provider == null
+          ? 'local'
+          : WatchHistory.forProvider(widget.provider!).scope);
+  void captionsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> openPlaybackSource(PlaybackSource next) async {
+    await liveCaptions.beginStream(next.isLive);
+    if (!mounted) return;
+    await engine.open(next);
+    if (mounted && next.isLive) {
+      try {
+        await liveCaptions.restore();
+      } catch (_) {
+        /* Optional caption selection must not trigger connection recovery. */
+      }
+    }
+  }
+
+  Future<void> liveCaptionMenu() async {
+    controlsTimer?.cancel();
+    final choice = await showPlayerDrawer<String>(
+      context,
+      title: 'Closed captions',
+      settings: true,
+      builder: (drawerContext) => ListenableBuilder(
+        listenable: liveCaptions,
+        builder: (_, _) => ListView(
+          children: [
+            if (!liveCaptions.available)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('No captions detected on this channel.'),
+              ),
+            for (final option in [
+              const PlayerOption('no', 'Off'),
+              if (liveCaptions.available)
+                const PlayerOption('auto', 'Automatic'),
+              ...playerTrackOptions(
+                liveCaptions.tracks
+                    .map((t) => (id: t.id, label: t.label))
+                    .toList(),
+              ),
+              if (engine is SubtitleCustomizationEngine)
+                const PlayerOption('__style', 'Size, color and position'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: TextButton(
+                  autofocus: option.id == liveCaptions.selected,
+                  onPressed: () => Navigator.pop(drawerContext, option.id),
+                  style:
+                      TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        alignment: Alignment.centerLeft,
+                        minimumSize: const Size(double.infinity, 46),
+                        backgroundColor: option.id == liveCaptions.selected
+                            ? const Color(0xff30445d)
+                            : const Color(0xff27313e),
+                      ).copyWith(
+                        side: WidgetStateProperty.resolveWith(
+                          (states) => BorderSide(
+                            color: states.contains(WidgetState.focused)
+                                ? const Color(0xff64b5f6)
+                                : Colors.transparent,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          option.label,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ),
+                      if (option.id == liveCaptions.selected)
+                        const Icon(Icons.check, size: 20),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    try {
+      if (choice == '__style' && engine is SubtitleCustomizationEngine) {
+        await showDialog<void>(
+          context: context,
+          builder: (_) => SubtitleAppearanceDialog(
+            engine: engine as SubtitleCustomizationEngine,
+          ),
+        );
+        await subtitlePreferences.saveAppearance(
+          (engine as SubtitleCustomizationEngine).subtitleAppearance,
+        );
+      } else if (choice != null) {
+        await liveCaptions.choose(choice);
+      }
+    } catch (failure) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              failure is ProviderException
+                  ? failure.message
+                  : 'Could not apply captions. The track may no longer be available.',
+            ),
+          ),
+        );
+      }
+    }
+    if (mounted) {
+      revealControls();
+      if (liveCaptionFocus.context != null) {
+        liveCaptionFocus.requestFocus();
+      } else {
+        playPauseFocus.requestFocus();
+      }
+    }
+  }
+
   int playbackProgressVersion = 0;
   List<SubtitleOption> subtitleTracks = [];
   String selectedSubtitleName = 'Automatic';
-  late final subtitlePreferences = SubtitlePreferences(
-    scope: widget.history?.scope,
-  );
+  late final subtitlePreferences = SubtitlePreferences(scope: captionProfile);
   String? pendingSubtitle;
   String get subtitleScope =>
       '${widget.history?.scope ?? 'local'}:${widget.item?.type.name ?? 'media'}:${widget.item?.id ?? source.title}:${currentEpisode?.id ?? ''}';
@@ -1456,6 +1585,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       controlsVisible = false;
     }
     engine = widget.engineFactory?.call() ?? MediaKitEngine();
+    liveCaptions = LiveCaptions(
+      engine: engine,
+      preferences: subtitlePreferences,
+      profile: captionProfile,
+    );
+    liveCaptions.addListener(captionsChanged);
     // Keep the native video widget stable, without caching it together with
     // Flutter's overlay painting. The decoder supplies its own texture frames.
     videoSurface = engine.surface();
@@ -1625,6 +1760,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
     subscriptions.add(
       engine.subtitles.listen((tracks) {
+        liveCaptions.updateTracks(tracks);
         if (mounted) setState(() => subtitleTracks = tracks);
         if (pendingSubtitle != null &&
             tracks.any((track) => track.id == pendingSubtitle)) {
@@ -1675,7 +1811,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       starting = true;
     });
     try {
-      await engine.open(source);
+      await openPlaybackSource(source);
       resumeReady = true;
       if (resumeAt > Duration.zero && !source.isLive) {
         unawaited(verifyResume());
@@ -1702,6 +1838,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   @override
   void dispose() {
+    liveCaptions.removeListener(captionsChanged);
+    liveCaptions.dispose();
+    liveCaptionFocus.dispose();
     WidgetsBinding.instance.removeObserver(this);
     diagnosticTimer?.cancel();
     diagnosticText.dispose();
@@ -1835,126 +1974,41 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> subtitleMenu() async {
-    final choice = !source.isLive
-        ? await showPlayerOptions(
-            context,
-            title: 'Subtitles',
-            settings: true,
-            selected: selectedSubtitleId,
-            options: [
-              const PlayerOption('no', 'Off'),
-              const PlayerOption('auto', 'Automatic'),
-              ...playerTrackOptions(
-                subtitleTracks
-                    .map((track) => (id: track.id, label: track.label))
-                    .toList(),
-              ),
-              const PlayerOption(
-                '__url',
-                'Add subtitle URL',
-                section: 'External Subtitles',
-              ),
-              const PlayerOption(
-                '__online',
-                'Search online subtitles',
-                section: 'External Subtitles',
-              ),
-              if (engine is SubtitleCustomizationEngine)
-                const PlayerOption(
-                  '__style',
-                  'Size, color and position',
-                  section: 'Appearance',
-                ),
-            ],
-          )
-        : await showDialog<String>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Subtitles'),
-              contentPadding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-              content: SizedBox(
-                width: 280,
-                height: 240,
-                child: StreamBuilder<List<SubtitleOption>>(
-                  stream: engine.subtitles,
-                  initialData: subtitleTracks,
-                  builder: (_, snapshot) => ListView(
-                    shrinkWrap: true,
-                    children: [
-                      ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity.compact,
-                        leading: const Icon(Icons.add),
-                        title: const Text('Add subtitle URL'),
-                        onTap: () => Navigator.pop(context, '__url'),
-                      ),
-                      ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity.compact,
-                        leading: const Icon(Icons.search),
-                        title: const Text('Search online subtitles'),
-                        onTap: () => Navigator.pop(context, '__online'),
-                      ),
-                      if (engine is SubtitleCustomizationEngine) ...[
-                        StreamBuilder<String>(
-                          stream: (engine as SubtitleCustomizationEngine)
-                              .selectedSubtitle,
-                          builder: (_, snapshot) => ListTile(
-                            dense: true,
-                            visualDensity: VisualDensity.compact,
-                            title: Text(
-                              'Selected: ${snapshot.data ?? selectedSubtitleName}',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ),
-                        ListTile(
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          leading: const Icon(Icons.format_size),
-                          title: const Text('Size, color and position'),
-                          onTap: () => Navigator.pop(context, '__style'),
-                        ),
-                      ],
-                      ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity.compact,
-                        title: const Text('Off'),
-                        onTap: () => Navigator.pop(context, 'no'),
-                      ),
-                      ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity.compact,
-                        title: const Text('Automatic'),
-                        onTap: () => Navigator.pop(context, 'auto'),
-                      ),
-                      if ((snapshot.data ?? []).isEmpty)
-                        const ListTile(
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          title: Text('No IPTV subtitle tracks detected.'),
-                        ),
-                      for (final track in snapshot.data ?? <SubtitleOption>[])
-                        ListTile(
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          title: Text(track.label),
-                          onTap: () => Navigator.pop(context, track.id),
-                        ),
-                      const Divider(),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Close'),
-                ),
-              ],
-            ),
-          );
+    if (source.isLive) {
+      await liveCaptionMenu();
+      return;
+    }
+    final choice = await showPlayerOptions(
+      context,
+      title: 'Subtitles',
+      settings: true,
+      selected: selectedSubtitleId,
+      options: [
+        const PlayerOption('no', 'Off'),
+        const PlayerOption('auto', 'Automatic'),
+        ...playerTrackOptions(
+          subtitleTracks
+              .map((track) => (id: track.id, label: track.label))
+              .toList(),
+        ),
+        const PlayerOption(
+          '__url',
+          'Add subtitle URL',
+          section: 'External Subtitles',
+        ),
+        const PlayerOption(
+          '__online',
+          'Search online subtitles',
+          section: 'External Subtitles',
+        ),
+        if (engine is SubtitleCustomizationEngine)
+          const PlayerOption(
+            '__style',
+            'Size, color and position',
+            section: 'Appearance',
+          ),
+      ],
+    );
     if (!mounted || choice == null) return;
     if (choice == '__style' && engine is SubtitleCustomizationEngine) {
       await showDialog<void>(
@@ -2205,11 +2259,18 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   Widget build(BuildContext context) {
     if (engine is SubtitleOverlayAvoidanceEngine) {
-      final inset = !source.isLive && controlsVisible && !vodDrawerOpen
-          ? VodPlayerControls.overlayHeightFor(
-                  MediaQuery.sizeOf(context).height,
-                ) +
-                12
+      final inset = controlsVisible && !vodDrawerOpen
+          ? source.isLive
+                ? liveCaptions.enabled
+                      ? (MediaQuery.sizeOf(context).height * .32).clamp(
+                          180.0,
+                          280.0,
+                        )
+                      : 0.0
+                : VodPlayerControls.overlayHeightFor(
+                        MediaQuery.sizeOf(context).height,
+                      ) +
+                      12
           : 0.0;
       if (inset != lastSubtitleInset) {
         lastSubtitleInset = inset;
@@ -3081,6 +3142,18 @@ class _PlayerScreenState extends State<PlayerScreen>
                                                             .fiber_manual_record,
                                                 ),
                                               ),
+                                            if (source.isLive)
+                                              IconButton(
+                                                focusNode: liveCaptionFocus,
+                                                tooltip: 'Closed captions',
+                                                onPressed: liveCaptionMenu,
+                                                icon: Icon(
+                                                  liveCaptions.enabled
+                                                      ? Icons.closed_caption
+                                                      : Icons
+                                                            .closed_caption_outlined,
+                                                ),
+                                              ),
                                             if (!source.isLive)
                                               IconButton(
                                                 tooltip: 'Subtitles',
@@ -3287,6 +3360,9 @@ class _PlayerScreenState extends State<PlayerScreen>
                             await switchLiveChannel(item);
                           },
                           onChannels: chooseChannel,
+                          onCaptions: liveCaptionMenu,
+                          captionsEnabled: liveCaptions.enabled,
+                          captionFocus: liveCaptionFocus,
                           onGuide: showEpg,
                           onActivity: revealControls,
                           onOverlayOpened: () => controlsTimer?.cancel(),
