@@ -76,6 +76,8 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
   final footerFocus = FocusNode(debugLabel: 'series catalog all series');
   bool focusOnReady = false;
   final gridFirst = FocusNode(debugLabel: 'series grid first poster');
+  final gridNodes = <String, FocusNode>{};
+  int gridNavigation = 0;
   final categoryData = <String, Future<List<ContentItem>>>{};
   final detailData = <String, Future<SeriesDetails>>{};
   final _rowKeys = <String, GlobalKey<_CatalogSectionState>>{};
@@ -167,6 +169,7 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
       gridFirst,
       gridSelected,
       footerFocus,
+      ...gridNodes.values,
     ]) {
       node.dispose();
     }
@@ -996,112 +999,124 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
     ),
   );
 
-  Widget gridControls() => Row(
-    children: [
-      Expanded(
-        child: Focus(
+  void focusGridStart() {
+    if (gridScroll.hasClients) gridScroll.jumpTo(0);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) gridFirst.requestFocus();
+    });
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  Widget gridControls() => Padding(
+    key: const ValueKey('catalog-grid-controls'),
+    padding: const EdgeInsets.symmetric(vertical: 12),
+    child: Row(
+      children: [
+        Expanded(
+          child: Focus(
+            canRequestFocus: false,
+            onKeyEvent: (_, event) {
+              if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+                  event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                gridSort.requestFocus();
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: ActivationTextField(
+              focusNode: gridSearch,
+              controller: gridQueryController,
+              onNavigateUp: () => searchFocus.requestFocus(),
+              onNavigateDown: focusGridStart,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: filter == null
+                    ? 'Search all $catalogLower'
+                    : 'Search $selectedCategoryName',
+              ),
+              onChanged: (value) {
+                if (!BrowsingModeSettings.instance.lite) {
+                  setState(() => query = value.toLowerCase());
+                  return;
+                }
+                liteSearchDelay?.cancel();
+                liteSearchDelay = Timer(const Duration(milliseconds: 200), () {
+                  if (mounted) setState(() => query = value.toLowerCase());
+                });
+              },
+            ),
+          ),
+        ),
+        Focus(
           canRequestFocus: false,
           onKeyEvent: (_, event) {
-            if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
-                event.logicalKey == LogicalKeyboardKey.arrowRight) {
-              gridSort.requestFocus();
+            if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+              return KeyEventResult.ignored;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+              gridSearch.requestFocus();
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+              gridCatalog.requestFocus();
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+              focusGridStart();
               return KeyEventResult.handled;
             }
             return KeyEventResult.ignored;
           },
-          child: ActivationTextField(
-            focusNode: gridSearch,
-            controller: gridQueryController,
-            onNavigateUp: () => searchFocus.requestFocus(),
-            onNavigateDown: () => gridFirst.requestFocus(),
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: filter == null
-                  ? 'Search all $catalogLower'
-                  : 'Search $selectedCategoryName',
+          child: PopupMenuButton<String>(
+            key: gridSortMenu,
+            tooltip: 'Sort $catalogLower',
+            onSelected: (value) => setState(() => sort = value),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'provider', child: Text('Provider order')),
+              PopupMenuItem(value: 'date', child: Text('Recently Added')),
+              PopupMenuItem(value: 'az', child: Text('Title A-Z')),
+              PopupMenuItem(value: 'za', child: Text('Title Z-A')),
+              PopupMenuItem(
+                value: 'year',
+                child: Text('Release Year (when available)'),
+              ),
+              PopupMenuItem(
+                value: 'rating',
+                child: Text('Rating (when available)'),
+              ),
+            ],
+            child: IconButton(
+              focusNode: gridSort,
+              icon: const Icon(Icons.sort),
+              onPressed: () => gridSortMenu.currentState?.showButtonMenu(),
             ),
-            onChanged: (value) {
-              if (!BrowsingModeSettings.instance.lite) {
-                setState(() => query = value.toLowerCase());
-                return;
-              }
-              liteSearchDelay?.cancel();
-              liteSearchDelay = Timer(const Duration(milliseconds: 200), () {
-                if (mounted) setState(() => query = value.toLowerCase());
-              });
-            },
           ),
         ),
-      ),
-      Focus(
-        canRequestFocus: false,
-        onKeyEvent: (_, event) {
-          if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+        Focus(
+          canRequestFocus: false,
+          onKeyEvent: (_, event) {
+            if (event is KeyDownEvent &&
+                event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+              gridSort.requestFocus();
+              return KeyEventResult.handled;
+            }
+            if (event is KeyDownEvent &&
+                event.logicalKey == LogicalKeyboardKey.arrowDown) {
+              focusGridStart();
+              return KeyEventResult.handled;
+            }
             return KeyEventResult.ignored;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-            gridSearch.requestFocus();
-            return KeyEventResult.handled;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-            gridCatalog.requestFocus();
-            return KeyEventResult.handled;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-            gridFirst.requestFocus();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: PopupMenuButton<String>(
-          key: gridSortMenu,
-          tooltip: 'Sort $catalogLower',
-          onSelected: (value) => setState(() => sort = value),
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'provider', child: Text('Provider order')),
-            PopupMenuItem(value: 'date', child: Text('Recently Added')),
-            PopupMenuItem(value: 'az', child: Text('Title A-Z')),
-            PopupMenuItem(value: 'za', child: Text('Title Z-A')),
-            PopupMenuItem(
-              value: 'year',
-              child: Text('Release Year (when available)'),
-            ),
-            PopupMenuItem(
-              value: 'rating',
-              child: Text('Rating (when available)'),
-            ),
-          ],
-          child: IconButton(
-            focusNode: gridSort,
-            icon: const Icon(Icons.sort),
-            onPressed: () => gridSortMenu.currentState?.showButtonMenu(),
+          },
+          child: TextButton(
+            focusNode: gridCatalog,
+            onPressed: BrowsingModeSettings.instance.lite
+                ? widget.onNavigation
+                : handleBack,
+            child: const Text('Catalog'),
           ),
         ),
-      ),
-      Focus(
-        canRequestFocus: false,
-        onKeyEvent: (_, event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-            gridSort.requestFocus();
-            return KeyEventResult.handled;
-          }
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.arrowDown) {
-            gridFirst.requestFocus();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: TextButton(
-          focusNode: gridCatalog,
-          onPressed: BrowsingModeSettings.instance.lite
-              ? widget.onNavigation
-              : handleBack,
-          child: const Text('Catalog'),
-        ),
-      ),
-    ],
+      ],
+    ),
   );
   Widget gridBody(double width) => FutureBuilder<List<ContentItem>>(
     future: gridItems,
@@ -1176,6 +1191,45 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
             });
           }
 
+          FocusNode nodeAt(int index) => index == 0
+              ? gridFirst
+              : index == selectedIndex
+              ? gridSelected
+              : gridNodes.putIfAbsent(
+                  rows[index].id,
+                  () => FocusNode(debugLabel: 'catalog grid ${rows[index].id}'),
+                );
+          Future<void> moveTo(int index) async {
+            if (index < 0 || index >= rows.length) return;
+            final ticket = ++gridNavigation;
+            final signature = (filter, query, sort);
+            final tileWidth =
+                (constraints.maxWidth - 12 - (columns - 1) * 18) / columns;
+            final tileHeight = tileWidth / .63;
+            final top = 16 + (index ~/ columns) * (tileHeight + 18);
+            final target = nodeAt(index);
+            if (gridScroll.hasClients) {
+              final position = gridScroll.position;
+              final bottom = top + tileHeight;
+              final offset =
+                  top < position.pixels ||
+                      tileHeight > position.viewportDimension
+                  ? top - 16
+                  : bottom > position.pixels + position.viewportDimension
+                  ? bottom + 16 - position.viewportDimension
+                  : position.pixels;
+              gridScroll.jumpTo(offset.clamp(0, position.maxScrollExtent));
+            }
+            WidgetsBinding.instance.scheduleFrame();
+            await WidgetsBinding.instance.endOfFrame;
+            if (mounted &&
+                grid &&
+                ticket == gridNavigation &&
+                signature == (filter, query, sort)) {
+              target.requestFocus();
+            }
+          }
+
           return GridView.builder(
             controller: gridScroll,
             key: ValueKey((filter, query, sort)),
@@ -1190,28 +1244,39 @@ class SeriesCatalogScreenState extends State<SeriesCatalogScreen> {
             itemBuilder: (_, index) => Focus(
               canRequestFocus: false,
               onKeyEvent: (_, event) {
-                if (event is KeyDownEvent &&
-                    event.logicalKey == LogicalKeyboardKey.arrowLeft &&
-                    index % columns == 0) {
-                  widget.onNavigation();
-                  return KeyEventResult.handled;
+                if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                  return KeyEventResult.ignored;
                 }
-                if (event is KeyDownEvent &&
-                    event.logicalKey == LogicalKeyboardKey.arrowUp &&
-                    index < columns) {
-                  gridSearch.requestFocus();
-                  return KeyEventResult.handled;
+                final key = event.logicalKey;
+                if (key == LogicalKeyboardKey.arrowLeft) {
+                  if (index % columns == 0) {
+                    widget.onNavigation();
+                  } else {
+                    unawaited(moveTo(index - 1));
+                  }
+                } else if (key == LogicalKeyboardKey.arrowRight) {
+                  if (index + 1 < rows.length) unawaited(moveTo(index + 1));
+                } else if (key == LogicalKeyboardKey.arrowUp) {
+                  if (index < columns) {
+                    gridSearch.requestFocus();
+                  } else {
+                    unawaited(moveTo(index - columns));
+                  }
+                } else if (key == LogicalKeyboardKey.arrowDown) {
+                  if (index ~/ columns < (rows.length - 1) ~/ columns) {
+                    unawaited(
+                      moveTo((index + columns).clamp(0, rows.length - 1)),
+                    );
+                  }
+                } else {
+                  return KeyEventResult.ignored;
                 }
-                return KeyEventResult.ignored;
+                return KeyEventResult.handled;
               },
               child: SeriesPosterCard(
                 item: rows[index],
                 provider: widget.provider,
-                focusNode: index == 0
-                    ? gridFirst
-                    : index == selectedIndex
-                    ? gridSelected
-                    : null,
+                focusNode: nodeAt(index),
                 inlineExpansion: false,
                 onFocus: () => focusTitle(rows[index]),
                 onOpen: () => open(rows[index]),
@@ -1265,6 +1330,7 @@ class _CatalogSectionState extends State<_CatalogSection>
   bool get wantKeepAlive => visited;
   late Future<List<ContentItem>> items = load();
   final rail = GlobalKey<MediaHorizontalRailState>();
+  final sectionRevealKey = GlobalKey();
   bool visited = false;
   Future<List<ContentItem>> load() async {
     final rows = await widget.section.load();
@@ -1303,6 +1369,7 @@ class _CatalogSectionState extends State<_CatalogSection>
   Widget build(BuildContext context) {
     super.build(context);
     return Column(
+      key: sectionRevealKey,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
@@ -1330,6 +1397,7 @@ class _CatalogSectionState extends State<_CatalogSection>
               final rows = snapshot.data!;
               return MediaHorizontalRail(
                 key: rail,
+                verticalRevealKey: sectionRevealKey,
                 count: rows.length,
                 width: widget.width + 18,
                 height: widget.height - 54,

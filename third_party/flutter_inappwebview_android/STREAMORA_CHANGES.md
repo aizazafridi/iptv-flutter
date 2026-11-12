@@ -1,0 +1,1 @@
+Based on flutter_inappwebview_android 1.1.3; upstream license retained. Only android/build.gradle differs: both default ProGuard file references use proguard-android-optimize.txt, as required by the project Android Gradle Plugin 9.1.0. No Java or Dart playback code is changed. Shared Pub-cache files are not modified.

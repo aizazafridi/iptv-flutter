@@ -22,7 +22,8 @@ class _ContinueWatchingArtworkState extends State<ContinueWatchingArtwork> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.item.id != widget.item.id ||
         oldWidget.item.type != widget.item.type ||
-        oldWidget.item.name != widget.item.name) {
+        oldWidget.item.name != widget.item.name ||
+        oldWidget.service != widget.service) {
       backdrop = load();
     }
   }
@@ -34,28 +35,30 @@ class _ContinueWatchingArtworkState extends State<ContinueWatchingArtwork> {
         : SharedArtworkImage(
             kind: ArtworkKind.episode,
             imageUrl: widget.item.artwork.toString(),
-            fit: BoxFit.contain,
+            fit: BoxFit.cover,
             errorWidget: (_, _, _) => const Center(
               child: Icon(Icons.movie_outlined, color: Colors.white38),
             ),
           ),
   );
   @override
-  Widget build(BuildContext context) => FutureBuilder<Uri?>(
-    future: backdrop,
-    builder: (context, snapshot) {
-      final uri = snapshot.data;
-      if (snapshot.connectionState != ConnectionState.done) {
-        return const ColoredBox(color: Color(0xff101722));
-      }
-      if (uri == null) return poster();
-      return SharedArtworkImage(
-        kind: ArtworkKind.episode,
-        imageUrl: uri.toString(),
-        fit: BoxFit.cover,
-        placeholder: (_, _) => const ColoredBox(color: Color(0xff101722)),
-        errorWidget: (_, _, _) => poster(),
-      );
-    },
+  Widget build(BuildContext context) => SizedBox.expand(
+    child: FutureBuilder<Uri?>(
+      future: backdrop,
+      builder: (context, snapshot) {
+        final uri = snapshot.data;
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const ColoredBox(color: Color(0xff101722));
+        }
+        if (uri == null) return poster();
+        return SharedArtworkImage(
+          kind: ArtworkKind.episode,
+          imageUrl: uri.toString(),
+          fit: BoxFit.cover,
+          placeholder: (_, _) => const ColoredBox(color: Color(0xff101722)),
+          errorWidget: (_, _, _) => poster(),
+        );
+      },
+    ),
   );
 }

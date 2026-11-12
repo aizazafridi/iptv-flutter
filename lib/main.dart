@@ -1,3 +1,4 @@
+import 'presentation/companion_route_observer.dart';
 import 'data/artwork_repository.dart';
 import 'application/browsing_mode.dart';
 import 'package:flutter/foundation.dart';
@@ -33,6 +34,7 @@ class StreamlaneApp extends StatefulWidget {
 }
 
 class _StreamlaneAppState extends State<StreamlaneApp> {
+  final companionRoutes = CompanionRouteObserver();
   final appearance = AppAppearance();
   late final Session session = Session(
     ProviderRegistry(),
@@ -57,6 +59,7 @@ class _StreamlaneAppState extends State<StreamlaneApp> {
     listenable: appearance,
     builder: (context, _) => MaterialApp(
       title: 'Streamora',
+      navigatorObservers: [companionRoutes],
       builder: (context, child) =>
           FocusTooltips(child: child ?? const SizedBox.shrink()),
       shortcuts: <ShortcutActivator, Intent>{

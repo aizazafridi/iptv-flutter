@@ -10,6 +10,11 @@ import 'package:iptv_flutter/presentation/live_channel_browser.dart';
 import 'tv_guide_screen_test.dart' show GuideProvider;
 
 class BrowserProvider extends GuideProvider {
+  @override
+  Future<List<ContentItem>> getAllItems(ContentType type) async => [
+    ...channels,
+    ...await getItems(const Category('sports', 'Sports', ContentType.live)),
+  ];
   final channels = List.generate(
     120,
     (i) => ContentItem(
@@ -93,6 +98,120 @@ Future<void> openBrowser(
 }
 
 void main() {
+  testWidgets(
+    'inline categories preserve drawer geometry, count, search and Back focus',
+    (tester) async {
+      final selection = LiveChannelBrowserSelection();
+      await openBrowser(tester, BrowserProvider(), [], selection: selection);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      final panel = find.byKey(const ValueKey('live-channel-browser-panel'));
+      final before = tester.getRect(panel);
+      final row = find
+          .ancestor(of: find.text('Channel 1'), matching: find.byType(InkWell))
+          .first;
+      final previousFocus = FocusManager.instance.primaryFocus;
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(panel), before);
+      expect(find.byType(Dialog), findsOneWidget);
+      expect(find.byTooltip('Back to channels'), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsNothing);
+      expect(
+        find.byKey(const ValueKey('live-category-search-input')),
+        findsNothing,
+      );
+      expect(
+        FocusManager.instance.primaryFocus?.debugLabel,
+        'channel option news',
+      );
+      final news = find
+          .ancestor(of: find.text('News'), matching: find.byType(TextButton))
+          .first;
+      expect(
+        find.descendant(of: news, matching: find.text('120')),
+        findsOneWidget,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(selection.categoryId, 'news');
+      expect(FocusManager.instance.primaryFocus, same(previousFocus));
+      expect(Focus.of(tester.element(row)).hasFocus, isTrue);
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Search categories'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'SPORTS');
+      await tester.pumpAndSettle();
+      expect(find.text('News'), findsNothing);
+      await tester.tap(find.text('Sports'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('live-category-list')), findsNothing);
+      expect(selection.categoryId, 'sports');
+      final sports = find
+          .ancestor(
+            of: find.text('Sports channel'),
+            matching: find.byType(InkWell),
+          )
+          .first;
+      expect(Focus.of(tester.element(sports)).hasFocus, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'category dropdown remembers channels and uses 36 percent at Full HD',
+    (tester) async {
+      final selection = LiveChannelBrowserSelection();
+      await openBrowser(tester, BrowserProvider(), [], selection: selection);
+      tester.view.physicalSize = const Size(1920, 1080);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('live-channel-browser-panel')))
+            .width,
+        closeTo(691.2, .1),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      Future<void> choose(String label) async {
+        await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const ValueKey('live-category-list')),
+            matching: find.text(label),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await choose('Sports');
+      final sports = find
+          .ancestor(
+            of: find.text('Sports channel'),
+            matching: find.byType(InkWell),
+          )
+          .first;
+      expect(Focus.of(tester.element(sports)).hasFocus, isTrue);
+      await choose('News');
+      final news = find
+          .ancestor(of: find.text('Channel 1'), matching: find.byType(InkWell))
+          .first;
+      expect(Focus.of(tester.element(news)).hasFocus, isTrue);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(Focus.of(tester.element(news)).hasFocus, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets('selector bounds EPG work while rows are being browsed', (
     tester,
   ) async {
@@ -113,7 +232,7 @@ void main() {
     provider.dispose();
   });
   testWidgets(
-    'My List tabs share category styling and remote focus moves independently of selection',
+    'My List dropdown browses groups without selecting and Back cancels',
     (tester) async {
       final provider = BrowserProvider();
       final list = MyList.forProvider(provider);
@@ -124,64 +243,42 @@ void main() {
       await groups.assign('0', {a, b});
       final played = <String>[];
       await openBrowser(tester, provider, played);
-      final nativeStyle = tester.widget<Text>(find.text('News')).style;
       await tester.tap(find.text('My List'));
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group ${LiveFavouriteGroups.all}',
-      );
-      expect(
-        tester
-            .widget<Material>(
-              find
-                  .ancestor(
-                    of: find.text('All Favorites'),
-                    matching: find.byType(Material),
-                  )
-                  .first,
-            )
-            .color,
-        const Color(0xff30445d),
-      );
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await tester.pumpAndSettle();
-      expect(
-        FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group $a',
-      );
-      expect(groups.selectedGroup, LiveFavouriteGroups.all);
-      expect(tester.widget<Text>(find.text('Pakistan')).style, nativeStyle);
-      expect(
-        tester
-            .widget<Material>(
-              find
-                  .ancestor(
-                    of: find.text('Pakistan'),
-                    matching: find.byType(Material),
-                  )
-                  .first,
-            )
-            .color,
-        const Color(0xff30445d),
+        'channel category selector',
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(
+        FocusManager.instance.primaryFocus?.debugLabel,
+        'channel option $a',
+      );
+      expect(groups.selectedGroup, LiveFavouriteGroups.all);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
       expect(groups.selectedGroup, a);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group $b',
+        'channel option $b',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      expect(
-        FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group $a',
-      );
+      expect(groups.selectedGroup, a);
+      expect(find.byType(LiveChannelBrowser), findsOneWidget);
+      final restored = find
+          .ancestor(of: find.text('Channel 0'), matching: find.byType(InkWell))
+          .first;
+      expect(Focus.of(tester.element(restored)).hasFocus, isTrue);
       expect(played, isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
@@ -202,6 +299,8 @@ void main() {
       final played = <String>[];
       await openBrowser(tester, provider, played, selection: selection);
       await tester.tap(find.text('My List'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Dramas'));
       await tester.pumpAndSettle();
@@ -225,7 +324,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group $dramas',
+        'channel category selector',
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
@@ -243,7 +342,7 @@ void main() {
   );
 
   testWidgets(
-    'favorites group tabs filter locally and are reachable from channels',
+    'favorites dropdown filters locally and is reachable from channels',
     (tester) async {
       FlutterSecureStorage.setMockInitialValues({});
       final provider = BrowserProvider();
@@ -258,6 +357,8 @@ void main() {
       await tester.tap(find.text('My List'));
       await tester.pumpAndSettle();
       expect(find.text('All Favorites'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Local group'));
       await tester.pumpAndSettle();
       expect(find.text('Channel 1'), findsNothing);
@@ -267,7 +368,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel group $id',
+        'channel category selector',
       );
       expect(groups.selectedGroup, id);
       expect(selections, isEmpty);
@@ -285,13 +386,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel category news',
+        'channel category selector',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
-        'channel category sports',
+        'channel option sports',
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
@@ -313,13 +416,15 @@ void main() {
     (tester) async {
       final played = <String>[];
       await openBrowser(tester, BrowserProvider(), played);
+      await tester.tap(find.byKey(const ValueKey('live-category-selector')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Sports'));
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus!.debugLabel,
-        'channel category sports',
+        'channel category selector',
       );
       expect(played, isEmpty);
       await tester.pumpWidget(const SizedBox());
@@ -335,7 +440,7 @@ void main() {
       final width = tester
           .getSize(find.byKey(const ValueKey('live-channel-browser-panel')))
           .width;
-      expect(width, closeTo(960 * .45, .1));
+      expect(width, closeTo(960 * .36, .1));
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
       expect(selections, isEmpty);

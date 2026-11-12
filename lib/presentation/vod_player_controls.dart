@@ -5,7 +5,14 @@ class VodPlayerControls extends StatelessWidget {
   final String title, metadata, positionLabel, durationLabel;
   final double position, duration;
   final int seekSeconds;
-  final bool visible, playing, seekEnabled, seeking;
+  final bool visible,
+      playing,
+      seekEnabled,
+      seeking,
+      showSubtitles,
+      showMore,
+      playEnabled;
+  final VoidCallback? onClose;
   final FocusNode playFocus, seekFocus;
   final VoidCallback onActivity, onPlay, onRewind, onForward;
   final VoidCallback? onPrevious, onNext, onEpisodes, onAudio;
@@ -14,6 +21,10 @@ class VodPlayerControls extends StatelessWidget {
   const VodPlayerControls({
     super.key,
     this.seekSeconds = 10,
+    this.showSubtitles = true,
+    this.showMore = true,
+    this.playEnabled = true,
+    this.onClose,
     required this.title,
     required this.metadata,
     required this.positionLabel,
@@ -50,7 +61,10 @@ class VodPlayerControls extends StatelessWidget {
   double get controlsWidth =>
       42 +
       64 *
-          (4 +
+          (2 +
+              (showSubtitles ? 1 : 0) +
+              (showMore ? 1 : 0) +
+              (onClose == null ? 0 : 1) +
               (onPrevious == null ? 0 : 1) +
               (onNext == null ? 0 : 1) +
               (onEpisodes == null ? 0 : 1) +
@@ -226,7 +240,7 @@ class VodPlayerControls extends StatelessWidget {
                               playing
                                   ? Icons.pause_rounded
                                   : Icons.play_arrow_rounded,
-                              onPlay,
+                              playEnabled ? onPlay : null,
                               primary: true,
                               node: playFocus,
                             ),
@@ -248,18 +262,21 @@ class VodPlayerControls extends StatelessWidget {
                                 Icons.playlist_play,
                                 onEpisodes,
                               ),
-                            action(
-                              'Subtitles',
-                              Icons.subtitles_outlined,
-                              onSubtitles,
-                            ),
+                            if (showSubtitles)
+                              action(
+                                'Subtitles',
+                                Icons.subtitles_outlined,
+                                onSubtitles,
+                              ),
                             if (onAudio != null)
                               action(
                                 'Audio',
                                 Icons.audiotrack_outlined,
                                 onAudio,
                               ),
-                            action('More', Icons.tune, onMore),
+                            if (showMore) action('More', Icons.tune, onMore),
+                            if (onClose != null)
+                              action('Back', Icons.close, onClose),
                           ],
                         ),
                       ),

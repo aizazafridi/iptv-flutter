@@ -3,10 +3,72 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iptv_flutter/application/profile_artwork_warmup.dart';
 import 'package:iptv_flutter/application/browsing_mode.dart';
 import 'package:iptv_flutter/domain/models.dart';
+import 'package:iptv_flutter/domain/trailer_movie.dart';
+import 'package:iptv_flutter/data/trailers_repository.dart';
+import 'package:iptv_flutter/data/artwork_repository.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   tearDown(() => BrowsingModeSettings.instance.mode = BrowsingMode.premium);
+  test(
+    'trailer warmup loads each category and deduplicates display artwork',
+    () async {
+      final collections = <TrailerCollection>[];
+      final urls = <String>[];
+      const movie = TrailerMovie(
+        id: 1,
+        title: 'Trailer',
+        backdropPath: '/image.jpg',
+      );
+      await warmTrailerArtwork(
+        loadPage: (collection) async {
+          collections.add(collection);
+          return TrailerPage([movie, movie], 1, 1);
+        },
+        cacheImage: (url) async => urls.add(url),
+      );
+      expect(collections, TrailerCollection.values);
+      expect(urls.toSet(), {
+        ArtworkRepository.variant(movie.card.toString(), ArtworkKind.episode),
+        ArtworkRepository.variant(
+          movie.backdrop.toString(),
+          ArtworkKind.backdrop,
+        ),
+      });
+      expect(urls.length, 2);
+    },
+  );
+  test(
+    'trailer warmup skips Lite and stops downloads after its budget',
+    () async {
+      var calls = 0;
+      final pending = Completer<TrailerPage>();
+      Future<TrailerPage> load(TrailerCollection _) {
+        calls++;
+        return pending.future;
+      }
+
+      BrowsingModeSettings.instance.mode = BrowsingMode.lite;
+      await warmTrailerArtwork(loadPage: load);
+      expect(calls, 0);
+      BrowsingModeSettings.instance.mode = BrowsingMode.premium;
+      final urls = <String>[];
+      await warmTrailerArtwork(
+        budget: const Duration(milliseconds: 10),
+        loadPage: load,
+        cacheImage: (url) async => urls.add(url),
+      );
+      pending.complete(
+        TrailerPage(
+          [const TrailerMovie(id: 1, title: 'Late', backdropPath: '/late.jpg')],
+          1,
+          1,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(urls, isEmpty);
+    },
+  );
   test('startup uses shared poster variants and deduplicates URLs', () async {
     final calls = <String>[];
     final item = ContentItem(

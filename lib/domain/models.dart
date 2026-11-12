@@ -47,6 +47,7 @@ class Category {
 }
 
 class ContentItem {
+  final int? tmdbId;
   final String id, name;
   final ContentType type;
   final Uri? artwork;
@@ -58,6 +59,7 @@ class ContentItem {
   final double? rating;
   final int? releaseYear;
   const ContentItem({
+    this.tmdbId,
     required this.id,
     required this.name,
     required this.type,

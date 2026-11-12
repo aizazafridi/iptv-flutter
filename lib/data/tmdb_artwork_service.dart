@@ -1,4 +1,5 @@
 import 'artwork_repository.dart';
+import 'bounded_cache.dart';
 import '../application/browsing_mode.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -12,10 +13,11 @@ class TmdbArtworkService {
   );
   final TmdbCastService client;
   final bool persist;
-  final _cache = <String, Uri>{};
+  final _cache = BoundedCache<String, Uri>(200);
   final _pending = <String, Future<Uri?>>{};
   TmdbArtworkService({required this.client, this.persist = true});
-  final _seasonStills = <String, Future<Map<int, Uri>>>{};
+  final _seasonStills = BoundedCache<String, Map<int, Uri>>(24);
+  final _pendingSeasons = <String, Future<Map<int, Uri>>>{};
   Future<Uri?> episodeStill(MediaDetails info, Episode episode) async {
     if (BrowsingModeSettings.instance.lite ||
         !client.enabled ||
@@ -23,9 +25,18 @@ class TmdbArtworkService {
       return null;
     }
     final key = 'season-stills:v1:${client.key(info)}:${episode.season}';
-    final stills = await _seasonStills.putIfAbsent(
+    final cached = _seasonStills[key];
+    if (cached != null) return cached[episode.number];
+    final stills = await _pendingSeasons.putIfAbsent(
       key,
-      () => _loadSeasonStills(info, episode.season, key),
+      () => _loadSeasonStills(info, episode.season, key)
+          .then((stills) {
+            _seasonStills[key] = stills;
+            return stills;
+          })
+          .whenComplete(() {
+            _pendingSeasons.remove(key);
+          }),
     );
     return stills[episode.number];
   }
@@ -220,6 +231,7 @@ class TmdbArtworkService {
     String role,
     Future<Uri?> Function() lookup,
   ) async {
+    if (!ArtworkMetrics.enabled) return lookup();
     final watch = Stopwatch()..start();
     final uri = await lookup();
     ArtworkMetrics.record(
@@ -345,7 +357,6 @@ class TmdbArtworkService {
         '/t/p/${field == 'poster_path' ? 'w342' : 'w780'}$path',
       );
       _cache[key] = uri;
-      if (_cache.length > 200) _cache.remove(_cache.keys.first);
       if (persist) {
         try {
           final file = await client.cacheFile(key);

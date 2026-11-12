@@ -58,6 +58,119 @@ class MovieProvider extends CatalogProvider {
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+  for (final type in [ContentType.movies, ContentType.series]) {
+    for (final size in [const Size(960, 540), const Size(1920, 1080)]) {
+      testWidgets(
+        '$type category grid reaches final item and separates search at $size',
+        (tester) async {
+          tester.view.physicalSize = size;
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          final key = GlobalKey<SeriesCatalogScreenState>();
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: SeriesCatalogScreen(
+                  key: key,
+                  provider: type == ContentType.movies
+                      ? MovieProvider()
+                      : CatalogProvider(),
+                  type: type,
+                  onNavigation: () {},
+                  onSettings: () {},
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          key.currentState!.showGrid('0');
+          await tester.pumpAndSettle();
+          final controls = find.byKey(const ValueKey('catalog-grid-controls'));
+          final search = find.byType(TextField);
+          expect(
+            tester.getTopLeft(search).dy - tester.getTopLeft(controls).dy,
+            greaterThanOrEqualTo(12),
+          );
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+          await tester.pumpAndSettle();
+          for (var i = 0; i < 19; i++) {
+            await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+            await tester.pumpAndSettle();
+          }
+          SeriesPosterCard focused() => tester
+              .widgetList<SeriesPosterCard>(find.byType(SeriesPosterCard))
+              .singleWhere((card) => card.focusNode?.hasFocus == true);
+          expect(focused().item.id, '0-19');
+          final last = find.byWidget(focused());
+          final grid = find.byType(GridView);
+          expect(tester.getRect(grid).contains(tester.getCenter(last)), isTrue);
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+          await tester.pumpAndSettle();
+          expect(focused().item.id, '0-19');
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+          await tester.pumpAndSettle();
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+          await tester.pumpAndSettle();
+          expect(focused().item.id, '0-19');
+          key.currentState!.gridSearch.requestFocus();
+          await tester.pumpAndSettle();
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+          await tester.pumpAndSettle();
+          expect(focused().item.id, '0-0');
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        },
+      );
+    }
+    testWidgets('$type focused category heading stays visible', (tester) async {
+      tester.view.physicalSize = const Size(960, 540);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final key = GlobalKey<SeriesCatalogScreenState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SeriesCatalogScreen(
+              key: key,
+              provider: type == ContentType.movies
+                  ? MovieProvider()
+                  : CatalogProvider(),
+              type: type,
+              onNavigation: () {},
+              onSettings: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final row in [2, 3, 2]) {
+        unawaited(key.currentState!.focusRow(row));
+        await tester.pumpAndSettle();
+        final section = find.byKey(
+          ValueKey('series-section:category:${row - 2}'),
+        );
+        final heading = find.descendant(
+          of: section,
+          matching: find.text(row == 2 ? 'Drama' : 'Crime'),
+        );
+        final viewport = find
+            .ancestor(of: section, matching: find.byType(ListView))
+            .first;
+        expect(
+          tester.getTopLeft(heading).dy,
+          greaterThanOrEqualTo(tester.getTopLeft(viewport).dy),
+        );
+        expect(
+          tester.getBottomLeft(heading).dy,
+          lessThanOrEqualTo(tester.getBottomLeft(viewport).dy),
+        );
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
   testWidgets(
     'Movies keep stable cards and update the pinned featured panel on remote focus',
     (tester) async {

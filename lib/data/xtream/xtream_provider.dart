@@ -145,6 +145,7 @@ class XtreamProvider
             _directSources.remove('${type.name}:${row[idField]}');
           }
           return ContentItem(
+            tmdbId: int.tryParse(_text(row['tmdb_id'] ?? row['tmdb'])),
             id: _required(
               row,
               type == ContentType.series ? 'series_id' : 'stream_id',

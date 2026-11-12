@@ -360,7 +360,7 @@ void main() {
       );
       expect(
         tester.getSize(find.byKey(const ValueKey('dashboard-sidebar'))).width,
-        172,
+        76,
       );
       await press(tester, LogicalKeyboardKey.arrowRight);
       expect(

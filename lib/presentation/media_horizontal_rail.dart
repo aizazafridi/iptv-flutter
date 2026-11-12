@@ -8,8 +8,9 @@ class MediaHorizontalRail extends StatefulWidget {
   final int count, initialIndex;
   final double width, height;
   final Object? contentKey;
+  final GlobalKey? verticalRevealKey;
   final VoidCallback up, down;
-  final VoidCallback? onLeftBoundary;
+  final VoidCallback? onLeftBoundary, onRightBoundary;
   final Widget Function(int, FocusNode) itemBuilder;
   const MediaHorizontalRail({
     super.key,
@@ -21,7 +22,9 @@ class MediaHorizontalRail extends StatefulWidget {
     required this.itemBuilder,
     this.initialIndex = 0,
     this.contentKey,
+    this.verticalRevealKey,
     this.onLeftBoundary,
+    this.onRightBoundary,
   });
   @override
   State<MediaHorizontalRail> createState() => MediaHorizontalRailState();
@@ -63,7 +66,9 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
         navigated = true;
         current = index;
         unawaited(alignHorizontal(index));
-        final target = context.findRenderObject();
+        final target =
+            widget.verticalRevealKey?.currentContext?.findRenderObject() ??
+            context.findRenderObject();
         if (target != null) {
           // Only scroll the page vertically here. The generic ensureVisible
           // also shifts the horizontal row to a fractional tile offset.
@@ -169,7 +174,11 @@ class MediaHorizontalRailState extends State<MediaHorizontalRail> {
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-        unawaited(focusAt(current + 1));
+        if (current == widget.count - 1 && widget.onRightBoundary != null) {
+          widget.onRightBoundary!();
+        } else {
+          unawaited(focusAt(current + 1));
+        }
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;

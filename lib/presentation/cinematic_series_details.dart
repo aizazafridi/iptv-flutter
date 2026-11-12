@@ -6,7 +6,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'media_horizontal_rail.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'trailer_screen.dart';
 import '../application/category_locks.dart';
 import '../application/watch_history.dart';
 import '../data/tmdb_artwork_service.dart';
@@ -354,25 +354,8 @@ class _CinematicSeriesDetailsState extends State<CinematicSeriesDetails> {
     );
   }
 
-  Future<void> trailer() async {
-    try {
-      if (!await launchUrl(
-            info.trailer!,
-            mode: LaunchMode.externalApplication,
-          ) &&
-          mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open trailer.')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open trailer.')),
-        );
-      }
-    }
-  }
+  Future<void> trailer() =>
+      openInAppTrailer(context, info.trailer!, title: info.item.name);
 
   ButtonStyle secondaryStyle(double scale) =>
       TextButton.styleFrom(

@@ -1,3 +1,4 @@
+import 'companion_route_observer.dart';
 import '../application/live_captions.dart';
 import '../playback/playback_diagnostics.dart';
 import '../application/live_zap_channels.dart';
@@ -1859,12 +1860,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     previewDebounce?.cancel();
     previewHide?.cancel();
     previewVersion++;
-    unawaited(saveProgress());
+    CompanionRouteObserver.trackCleanup(saveProgress());
     for (final sub in subscriptions) {
       unawaited(sub.cancel());
     }
     videoRecorder?.removeListener(videoRecordingChanged);
-    unawaited(closePlayer());
+    CompanionRouteObserver.trackCleanup(closePlayer());
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     super.dispose();
   }

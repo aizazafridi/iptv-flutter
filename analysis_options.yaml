@@ -11,6 +11,8 @@ include: package:flutter_lints/flutter.yaml
 
 analyzer:
   exclude:
+    # Upstream plugin sources are unchanged; only its Gradle defaults are patched.
+    - third_party/flutter_inappwebview_android/**
     - build/**
     - android/**
     - ios/**

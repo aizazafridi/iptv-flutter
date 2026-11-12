@@ -27,14 +27,27 @@ typedef TmdbFetch = Future<Map<String, dynamic>> Function(Uri uri);
 /// Movie and series metadata only: IPTV credentials and stream URLs never leave the app.
 class TmdbCastService {
   static final configured = TmdbCastService(
-    token: const String.fromEnvironment('TMDB_READ_ACCESS_TOKEN'),
+    token: const String.fromEnvironment(
+      'TMDB_API_READ_TOKEN',
+      defaultValue: String.fromEnvironment('TMDB_READ_ACCESS_TOKEN'),
+    ),
+    baseUrl: const String.fromEnvironment(
+      'TMDB_API_BASE_URL',
+      defaultValue: 'https://api.themoviedb.org/3',
+    ),
   );
   final String token;
+  final String baseUrl;
   final TmdbFetch? fetch;
   final bool persist;
   final _pending = <String, Future<List<MovieCredit>>>{};
   final _cache = <String, List<MovieCredit>>{};
-  TmdbCastService({this.token = '', this.fetch, this.persist = true});
+  TmdbCastService({
+    this.token = '',
+    this.fetch,
+    this.persist = true,
+    this.baseUrl = 'https://api.themoviedb.org/3',
+  });
   bool get enabled => token.isNotEmpty || fetch != null;
   static String normalize(String text) => text
       .toLowerCase()
@@ -338,7 +351,16 @@ class TmdbCastService {
     String path, [
     Map<String, String> query = const {},
   ]) async {
-    final uri = Uri.https('api.themoviedb.org', '/3$path', query);
+    final base = Uri.parse(baseUrl);
+    if (base.scheme != 'https' ||
+        base.host.isEmpty ||
+        base.userInfo.isNotEmpty) {
+      throw const FormatException('Invalid TMDB configuration');
+    }
+    final uri = base.replace(
+      path: '${base.path.replaceFirst(RegExp(r'/+$'), '')}$path',
+      queryParameters: query,
+    );
     if (fetch != null) return fetch!(uri).timeout(const Duration(seconds: 8));
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     try {
@@ -352,7 +374,7 @@ class TmdbCastService {
         const Duration(seconds: 8),
       );
       if (response.statusCode != 200) {
-        throw const FormatException('Metadata unavailable');
+        throw TmdbApiException(response.statusCode);
       }
       final bytes = <int>[];
       await for (final chunk in response.timeout(const Duration(seconds: 8))) {
@@ -366,4 +388,15 @@ class TmdbCastService {
       client.close(force: true);
     }
   }
+}
+
+class TmdbApiException implements Exception {
+  final int status;
+  const TmdbApiException(this.status);
+  String get message => switch (status) {
+    401 || 403 =>
+      'TMDB access is unavailable. Check the API token and restart Streamora.',
+    429 => 'TMDB is receiving too many requests. Please try again shortly.',
+    _ => 'TMDB is unavailable. Please try again later.',
+  };
 }

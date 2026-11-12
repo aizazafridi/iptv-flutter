@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import '../domain/iptv_provider.dart';
 import '../domain/models.dart';
 import 'recent_items.dart';
+import 'dart:async';
+import 'trailer_reminders.dart';
 
 /// Cache belongs to the connected provider, so accounts never share catalogues.
 class RecentCatalogCache {
@@ -25,7 +27,15 @@ class RecentCatalogCache {
     final entries = _all[provider] ??= {};
     return entries.putIfAbsent(type, () async {
       try {
-        return await provider.getAllItems(type);
+        final items = await provider.getAllItems(type);
+        if (type == ContentType.movies) {
+          unawaited(
+            TrailerReminders.forProvider(
+              provider,
+            ).checkCatalog(provider, items).catchError((Object _) {}),
+          );
+        }
+        return items;
       } catch (_) {
         entries.remove(type);
         rethrow;

@@ -1,3 +1,10 @@
+import 'trailer_notifications.dart';
+import '../data/trailers_repository.dart';
+import 'trailers_screen.dart';
+import 'companion_route_observer.dart';
+import '../application/phone_companion_catalog.dart';
+import '../application/phone_companion_server.dart';
+import 'phone_companion_panel.dart';
 import 'history_removal.dart';
 import '../data/artwork_repository.dart';
 import 'shared_artwork_image.dart';
@@ -32,12 +39,14 @@ import 'smooth_page_route.dart';
 const _accent = Color(0xff64b5f6);
 
 class StreamoraDashboard extends StatefulWidget {
+  final TrailersRepository? trailersRepository;
   final Session session;
   final AppAppearance appearance;
   final VoidCallback onSettings;
   final List<Widget> headerActions;
   const StreamoraDashboard({
     super.key,
+    this.trailersRepository,
     required this.session,
     required this.appearance,
     required this.onSettings,
@@ -71,20 +80,35 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
   Timer? refresh;
   int guideVersion = 0;
   bool loadingGuide = false;
-  bool collapsed = false;
+  bool get collapsed => seriesActive || moviesActive || trailersActive;
   DateTime? exitPressed;
   bool seriesActive = false, seriesCreated = false;
   bool moviesActive = false, moviesCreated = false;
+  bool trailersActive = false, trailersCreated = false;
+  final trailerCatalog = GlobalKey<TrailersScreenState>();
+  void openTrailers() {
+    setState(() {
+      trailersActive = true;
+      trailersCreated = true;
+      moviesActive = false;
+      seriesActive = false;
+      lastNav = 'Trailers';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) trailerCatalog.currentState?.focusEntry();
+    });
+  }
+
   final movieCatalog = GlobalKey<SeriesCatalogScreenState>();
   SeriesCatalogScreenState? get activeCatalog =>
       moviesActive ? movieCatalog.currentState : seriesCatalog.currentState;
   void openMovies() {
     seriesFade.forward(from: 0);
     setState(() {
+      trailersActive = false;
       moviesActive = true;
       moviesCreated = true;
       seriesActive = false;
-      collapsed = true;
       lastNav = 'Movies';
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -96,10 +120,10 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
   void openSeries() {
     seriesFade.forward(from: 0);
     setState(() {
+      trailersActive = false;
       seriesActive = true;
       moviesActive = false;
       seriesCreated = true;
-      collapsed = true;
       lastNav = 'Series';
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -109,27 +133,160 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
 
   void openHome() {
     setState(() {
+      trailersActive = false;
       seriesActive = false;
       moviesActive = false;
-      collapsed = false;
     });
     navNode('Home').requestFocus();
+  }
+
+  PhoneCompanionServer? companion;
+  IptvProvider? companionProvider;
+  void companionSessionChanged() {
+    if (companion != null &&
+        !identical(companionProvider, widget.session.provider)) {
+      unawaited(companion!.stop());
+      companion = null;
+      companionProvider = null;
+    }
+  }
+
+  bool companionDialog = false, companionOpening = false;
+  int companionLaunchVersion = 0;
+  Future<void> phoneCompanion() async {
+    if (companionDialog) return;
+    companionDialog = true;
+    try {
+      final boundProvider = provider;
+      final boundProfile = widget.session.activeProfile;
+      if (companion == null) {
+        final page = await rootBundle.loadString('assets/companion/index.html');
+        if (!mounted) return;
+        bool active() =>
+            mounted &&
+            identical(widget.session.provider, boundProvider) &&
+            identical(widget.session.activeProfile, boundProfile);
+        final catalog = PhoneCompanionCatalog(
+          boundProvider,
+          isActive: active,
+          onOpen: (item, play) async {
+            if (!active()) throw const CompanionError(401, 'Profile changed.');
+            if (companionOpening) {
+              throw const CompanionError(
+                409,
+                'The TV is switching titles. Try again shortly.',
+              );
+            }
+            final anchor = ModalRoute.of(context);
+            final routes = CompanionRouteObserver.of(Navigator.of(context));
+            if (anchor == null ||
+                (!anchor.isCurrent && routes == null && !companionDialog)) {
+              throw const CompanionError(
+                409,
+                'Return to the TV dashboard before sending another title.',
+              );
+            }
+            companionOpening = true;
+            final ticket = ++companionLaunchVersion;
+            void release() {
+              if (ticket == companionLaunchVersion) companionOpening = false;
+            }
+
+            try {
+              if (routes != null) {
+                await routes.returnTo(anchor);
+              } else if (companionDialog) {
+                Navigator.of(context).pop();
+                await WidgetsBinding.instance.endOfFrame;
+              }
+              if (!active()) {
+                throw const CompanionError(401, 'Profile changed.');
+              }
+              unawaited(() async {
+                try {
+                  await openItem(item, autoPlay: play, onPresented: release);
+                } catch (_) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Could not open the title sent from your phone.',
+                        ),
+                      ),
+                    );
+                  }
+                } finally {
+                  release();
+                }
+              }());
+            } catch (_) {
+              release();
+              rethrow;
+            }
+          },
+        );
+        companionProvider = boundProvider;
+        companion = PhoneCompanionServer(
+          page: page,
+          dispatch: catalog.dispatch,
+          isCurrentProfile: active,
+        );
+      }
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (_) => PhoneCompanionPanel(server: companion!),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Phone companion could not be opened.')),
+        );
+      }
+    } finally {
+      companionDialog = false;
+    }
   }
 
   final contentScroll = ScrollController();
   final navNodes = <String, FocusNode>{};
   final railFocus = FocusNode(debugLabel: 'dashboard sidebar');
   final contentFocus = FocusNode(debugLabel: 'dashboard content');
-  void syncSidebar() {
-    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
-    if (!railFocus.hasFocus && !contentFocus.hasFocus) return;
-    final next = !railFocus.hasFocus;
-    if (collapsed != next) setState(() => collapsed = next);
-  }
-
   final liveFocus = FocusNode(debugLabel: 'dashboard Live TV');
   final onNowFocus = FocusNode(debugLabel: 'dashboard On Now');
   final searchFocus = FocusNode(debugLabel: 'dashboard Search');
+  final notificationFocus = FocusNode(debugLabel: 'dashboard Notifications');
+  Widget notificationsButton() => Focus(
+    canRequestFocus: false,
+    onKeyEvent: (_, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+        return KeyEventResult.ignored;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        searchFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        if (headerIndices.isNotEmpty) focusHeader(headerIndices.first);
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        if (provider.supportedTypes.contains(ContentType.live)) {
+          liveFocus.requestFocus();
+        } else {
+          returnToNavigation();
+        }
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: TrailerNotifications(
+      key: ObjectKey(provider),
+      provider: provider,
+      focusNode: notificationFocus,
+    ),
+  );
   final headerNodes = <int, FocusNode>{};
   FocusNode headerNode(int index) => headerNodes.putIfAbsent(
     index,
@@ -161,7 +318,8 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
         if (position > 0) {
           focusHeader(headerIndices[position - 1]);
         } else {
-          searchFocus.requestFocus();
+          (parental.kidsProfile ? searchFocus : notificationFocus)
+              .requestFocus();
         }
         return KeyEventResult.handled;
       }
@@ -189,9 +347,11 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     if (provider.supportedTypes.contains(ContentType.live)) 'Live TV',
     if (provider.supportedTypes.contains(ContentType.movies)) 'Movies',
     if (provider.supportedTypes.contains(ContentType.series)) 'Series',
+    if (!parental.kidsProfile) 'Trailers',
     if (provider.supportedTypes.contains(ContentType.live)) 'TV Guide',
     if (!parental.hidden(CategoryLocks.recordingsCategory(ContentType.live)))
       'Recordings',
+    'Phone companion',
   ];
   FocusNode navNode(String title) => navNodes.putIfAbsent(
     title,
@@ -213,7 +373,9 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      if (seriesActive || moviesActive) {
+      if (trailersActive) {
+        trailerCatalog.currentState?.focusEntry();
+      } else if (seriesActive || moviesActive) {
         activeCatalog?.focusEntry();
       } else if (provider.supportedTypes.contains(ContentType.live)) {
         liveFocus.requestFocus();
@@ -234,7 +396,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) navNode('Home').requestFocus();
     });
-    FocusManager.instance.addListener(syncSidebar);
+    widget.session.addListener(companionSessionChanged);
     history.addListener(historyChanged);
     parental.addListener(historyChanged);
     unawaited(
@@ -248,7 +410,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
 
   @override
   void dispose() {
-    FocusManager.instance.removeListener(syncSidebar);
+    widget.session.removeListener(companionSessionChanged);
     railFocus.dispose();
     contentFocus.dispose();
     for (final node in navNodes.values) {
@@ -260,11 +422,13 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     liveFocus.dispose();
     onNowFocus.dispose();
     searchFocus.dispose();
+    notificationFocus.dispose();
     contentScroll.dispose();
     refresh?.cancel();
     seriesFade.dispose();
     history.removeListener(historyChanged);
     parental.removeListener(historyChanged);
+    unawaited(companion?.stop());
     super.dispose();
   }
 
@@ -347,10 +511,12 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     }
   }
 
-  Future<void> push(Widget screen) async {
-    await Navigator.of(
+  Future<void> push(Widget screen, {VoidCallback? onPresented}) async {
+    final closed = Navigator.of(
       context,
     ).push(SmoothPageRoute<void>(builder: (_) => screen));
+    onPresented?.call();
+    await closed;
     if (mounted) {
       historyChanged();
       setState(() {
@@ -368,7 +534,11 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
             appearance: widget.appearance,
           ),
   );
-  Future<void> openItem(ContentItem item) async {
+  Future<void> openItem(
+    ContentItem item, {
+    bool autoPlay = false,
+    VoidCallback? onPresented,
+  }) async {
     if (!await requestTitleAccess(context, provider, item) || !mounted) return;
     final locks = CategoryLocks.forProvider(provider);
     await locks.load();
@@ -384,7 +554,10 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
       }
     }
     if (item.type != ContentType.live) {
-      await push(DetailsScreen(provider: provider, item: item));
+      await push(
+        DetailsScreen(provider: provider, item: item, autoPlay: autoPlay),
+        onPresented: onPresented,
+      );
       return;
     }
     try {
@@ -405,6 +578,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
           resolveChannel: provider.resolvePlayback,
           channelEpg: p is EpgProvider ? (p as EpgProvider).getEpg : null,
         ),
+        onPresented: onPresented,
       );
     } catch (_) {
       if (mounted) {
@@ -478,67 +652,74 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
     IconData icon,
     VoidCallback action, {
     bool selected = false,
-  }) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-    child: Focus(
-      canRequestFocus: false,
-      onKeyEvent: (_, event) => navigationKey(title, event),
-      child: Tooltip(
-        message: title,
-        child: TextButton(
-          focusNode: navNode(title),
-          autofocus: title == 'Home',
-          onFocusChange: (focused) {
-            if (focused) {
-              lastNav = title;
-              final target = navNode(title).context;
-              if (target != null) Scrollable.ensureVisible(target);
-            }
-          },
-          onPressed: action,
-          style:
-              TextButton.styleFrom(
-                alignment: Alignment.centerLeft,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                foregroundColor: Colors.white70,
-                backgroundColor: selected
-                    ? Colors.white.withValues(alpha: .06)
-                    : Colors.transparent,
-                minimumSize: const Size(double.infinity, 44),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ).copyWith(
-                foregroundColor: WidgetStateProperty.resolveWith(
-                  (states) => states.contains(WidgetState.focused)
-                      ? Colors.black
-                      : Colors.white70,
-                ),
-                backgroundColor: WidgetStateProperty.resolveWith(
-                  (states) => states.contains(WidgetState.focused)
-                      ? _accent
-                      : selected
-                      ? ((seriesActive || moviesActive)
-                            ? _accent.withValues(alpha: .2)
-                            : Colors.white.withValues(alpha: .06))
+  }) => Expanded(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: Focus(
+        canRequestFocus: false,
+        onKeyEvent: (_, event) => navigationKey(title, event),
+        child: Semantics(
+          label: collapsed ? title : null,
+          child: TextButton(
+            focusNode: navNode(title),
+            autofocus: title == 'Home',
+            onFocusChange: (focused) {
+              if (focused) {
+                lastNav = title;
+              }
+            },
+            onPressed: action,
+            style:
+                TextButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  foregroundColor: Colors.white70,
+                  backgroundColor: selected
+                      ? Colors.white.withValues(alpha: .06)
                       : Colors.transparent,
-                ),
-              ),
-          child: Row(
-            children: [
-              Icon(icon, size: 18),
-              if (!collapsed) ...[
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13),
+                  minimumSize: const Size(double.infinity, 44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ).copyWith(
+                  foregroundColor: WidgetStateProperty.resolveWith(
+                    (states) => title == 'Home'
+                        ? Colors.white
+                        : states.contains(WidgetState.focused)
+                        ? Colors.black
+                        : Colors.white70,
+                  ),
+                  overlayColor: title == 'Home'
+                      ? const WidgetStatePropertyAll(Colors.transparent)
+                      : null,
+                  backgroundColor: WidgetStateProperty.resolveWith(
+                    (states) => title == 'Home'
+                        ? Colors.transparent
+                        : states.contains(WidgetState.focused)
+                        ? _accent
+                        : selected
+                        ? ((seriesActive || moviesActive || trailersActive)
+                              ? _accent.withValues(alpha: .2)
+                              : Colors.white.withValues(alpha: .06))
+                        : Colors.transparent,
                   ),
                 ),
+            child: Row(
+              children: [
+                Icon(icon, size: 18),
+                if (!collapsed) ...[
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -569,13 +750,13 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
             ),
           ),
           Expanded(
-            child: ListView(
+            child: Column(
               children: [
                 nav(
                   'Home',
                   Icons.home_outlined,
                   openHome,
-                  selected: !seriesActive && !moviesActive,
+                  selected: !seriesActive && !moviesActive && !trailersActive,
                 ),
                 if (provider.supportedTypes.contains(ContentType.live)) ...[
                   nav(
@@ -598,6 +779,13 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                     openSeries,
                     selected: seriesActive,
                   ),
+                if (!parental.kidsProfile)
+                  nav(
+                    'Trailers',
+                    Icons.smart_display_outlined,
+                    openTrailers,
+                    selected: trailersActive,
+                  ),
                 if (provider.supportedTypes.contains(ContentType.live))
                   nav('TV Guide', Icons.view_list_outlined, guide),
                 if (!parental.hidden(
@@ -608,6 +796,11 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                     Icons.fiber_manual_record_outlined,
                     recordings,
                   ),
+                nav(
+                  'Phone companion',
+                  Icons.phonelink_outlined,
+                  phoneCompanion,
+                ),
               ],
             ),
           ),
@@ -1001,7 +1194,11 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
             return KeyEventResult.ignored;
           }
           if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-            if (headerIndices.isNotEmpty) focusHeader(headerIndices.first);
+            if (!parental.kidsProfile) {
+              notificationFocus.requestFocus();
+            } else if (headerIndices.isNotEmpty) {
+              focusHeader(headerIndices.first);
+            }
             return KeyEventResult.handled;
           }
           if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
@@ -1049,6 +1246,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
         return Row(
           children: [
             searchButton,
+            if (!parental.kidsProfile) notificationsButton(),
             const Spacer(),
             weather,
             for (var i = 0; i < widget.headerActions.length; i++)
@@ -1061,6 +1259,7 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
           Row(
             children: [
               searchButton,
+              if (!parental.kidsProfile) notificationsButton(),
               const Spacer(),
               Flexible(child: weather),
             ],
@@ -1091,6 +1290,10 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
   Widget buildDashboard(BuildContext context) => PopScope(
     canPop: false,
     onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && trailersActive) {
+        openHome();
+        return;
+      }
       if (!didPop && !seriesActive && !moviesActive) {
         final now = DateTime.now();
         if (exitPressed != null &&
@@ -1129,7 +1332,9 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
               focusNode: contentFocus,
               canRequestFocus: false,
               child: IndexedStack(
-                index: moviesActive
+                index: trailersActive
+                    ? 3
+                    : moviesActive
                     ? 2
                     : seriesActive
                     ? 1
@@ -1187,6 +1392,18 @@ class _StreamoraDashboardState extends State<StreamoraDashboard>
                           onSettings: widget.onSettings,
                           headerActions: widget.headerActions,
                         ),
+                      ),
+                    )
+                  else
+                    const SizedBox.shrink(),
+                  if (trailersCreated)
+                    TickerMode(
+                      enabled: trailersActive,
+                      child: TrailersScreen(
+                        key: trailerCatalog,
+                        provider: provider,
+                        repository: widget.trailersRepository,
+                        onNavigation: () => navNode('Trailers').requestFocus(),
                       ),
                     )
                   else

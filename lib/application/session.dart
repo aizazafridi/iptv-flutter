@@ -237,7 +237,12 @@ class Session extends ChangeNotifier {
         }),
       );
       if (_disposed) return;
-      await warmProfileArtwork(firstArtwork);
+      final trailerLocks = CategoryLocks.forProvider(connected);
+      await trailerLocks.load();
+      await Future.wait([
+        warmProfileArtwork(firstArtwork),
+        if (!trailerLocks.kidsProfile) warmTrailerArtwork(),
+      ]);
       contentPrepared = true;
       loadingProgress = 1;
       _notify();

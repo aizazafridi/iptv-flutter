@@ -18,9 +18,13 @@ dependencies:
   crypto: ^3.0.7
   http: ^1.6.0
   url_launcher: ^6.3.3
+  flutter_inappwebview: ^6.1.5
+  qr_flutter: ^4.1.0
   flutter_svg: ^2.3.0
 # The upstream default native flavor omits FFmpeg's cc_dec caption decoder.
 dependency_overrides:
+  flutter_inappwebview_android:
+    path: third_party/flutter_inappwebview_android
   media_kit_libs_windows_video:
     path: third_party/media_kit_libs_windows_video
   media_kit_libs_android_video:
@@ -37,6 +41,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/avatars/photos/
+    - assets/companion/index.html
     - assets/fonts/OFL.txt
     - assets/sports/stadium_header.jpg
     - assets/branding/tmdb.svg

@@ -9,7 +9,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../data/tmdb_cast_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'trailer_screen.dart';
 import '../application/watch_history.dart';
 import '../application/category_locks.dart';
 import '../domain/iptv_provider.dart';
@@ -316,25 +316,8 @@ class _CinematicMovieDetailsState extends State<CinematicMovieDetails> {
       ),
     ),
   );
-  Future<void> trailer() async {
-    try {
-      if (await launchUrl(
-        info.trailer!,
-        mode: LaunchMode.externalApplication,
-      )) {
-        return;
-      }
-    } catch (_) {
-      /* Display a safe message below. */
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not open the trailer on this device.'),
-        ),
-      );
-    }
-  }
+  Future<void> trailer() =>
+      openInAppTrailer(context, info.trailer!, title: info.item.name);
 
   Widget secondary(String label, IconData icon, VoidCallback? action) =>
       TextButton.icon(
@@ -938,8 +921,8 @@ class CastCreditCard extends StatelessWidget {
               children: [
                 ClipOval(
                   child: Container(
-                    width: 72,
-                    height: 72,
+                    width: 64,
+                    height: 64,
                     color: const Color(0xff202733),
                     child: credit.photo == null
                         ? const ColoredBox(
@@ -947,7 +930,7 @@ class CastCreditCard extends StatelessWidget {
                             child: Icon(
                               Icons.person_outline,
                               color: Colors.white54,
-                              size: 36,
+                              size: 32,
                             ),
                           )
                         : SharedArtworkImage(
@@ -960,7 +943,7 @@ class CastCreditCard extends StatelessWidget {
                             errorWidget: (_, _, _) => const Icon(
                               Icons.person_outline,
                               color: Colors.white54,
-                              size: 36,
+                              size: 32,
                             ),
                           ),
                   ),

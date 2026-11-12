@@ -55,7 +55,36 @@ add_subdirectory("runner")
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
+# The Windows embedded trailer player needs NuGet to resolve WebView2.
+# Prefer an installed tool; otherwise use a verified build-local Microsoft binary.
+find_program(NUGET nuget)
+if(NOT NUGET)
+  set(STREAMORA_NUGET "${CMAKE_BINARY_DIR}/tooling/nuget.exe")
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tooling")
+  set(STREAMORA_NUGET_SHA256 "c0ddc9cb0633c4607da7e8028eb4f91248c8b74e45a68b0c79fcfa7d78c2a481")
+  if(EXISTS "${STREAMORA_NUGET}")
+    file(SHA256 "${STREAMORA_NUGET}" STREAMORA_NUGET_ACTUAL)
+  endif()
+  if(NOT STREAMORA_NUGET_ACTUAL STREQUAL STREAMORA_NUGET_SHA256)
+    file(DOWNLOAD "https://dist.nuget.org/win-x86-commandline/v6.11.1/nuget.exe"
+      "${STREAMORA_NUGET}" EXPECTED_HASH "SHA256=${STREAMORA_NUGET_SHA256}" TLS_VERIFY ON)
+  endif()
+  set(NUGET "${STREAMORA_NUGET}" CACHE FILEPATH "NuGet CLI for WebView2 build dependencies" FORCE)
+endif()
 include(flutter/generated_plugins.cmake)
+# The stable WebView plugin uses WIL's C++17 coroutine compatibility path.
+# Current MSVC requires this explicit opt-in; keep it scoped to that plugin.
+if(TARGET flutter_inappwebview_windows_plugin)
+  target_compile_definitions(flutter_inappwebview_windows_plugin PRIVATE
+    _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+  if(MSVC)
+    # Multiple translation units share a compiler PDB in Debug builds.
+    target_compile_options(flutter_inappwebview_windows_plugin PRIVATE /FS)
+    set_target_properties(flutter_inappwebview_windows_plugin PROPERTIES
+      COMPILE_PDB_NAME "streamora_webview")
+  endif()
+endif()
+
 
 
 # === Installation ===

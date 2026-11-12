@@ -64,6 +64,25 @@ void main() {
         tester.getSize(find.byKey(const ValueKey('dashboard-sidebar'))).width,
         172,
       );
+      final sidebar = find.byKey(const ValueKey('dashboard-sidebar'));
+      expect(
+        find.descendant(of: sidebar, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: sidebar, matching: find.text('Home')),
+        findsOneWidget,
+      );
+      final sidebarRect = tester.getRect(sidebar);
+      final buttons = find.descendant(
+        of: sidebar,
+        matching: find.byType(TextButton),
+      );
+      for (final element in buttons.evaluate()) {
+        final rect = tester.getRect(find.byWidget(element.widget));
+        expect(rect.top, greaterThanOrEqualTo(sidebarRect.top));
+        expect(rect.bottom, lessThanOrEqualTo(sidebarRect.bottom));
+      }
       final continueTitle = find.text('Continue movie');
       expect(tester.getBottomRight(continueTitle).dy, lessThanOrEqualTo(540));
       Focus.of(tester.element(continueTitle)).requestFocus();
@@ -76,7 +95,7 @@ void main() {
       expect(dashboardScroll.offset, 0);
       expect(
         tester.getSize(find.byKey(const ValueKey('dashboard-sidebar'))).width,
-        76,
+        172,
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await tester.pumpAndSettle();
@@ -122,6 +141,8 @@ void main() {
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
       expect(
         Focus.of(
           tester.element(find.byIcon(Icons.switch_account_outlined)),
@@ -138,10 +159,14 @@ void main() {
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
       expect(
         FocusManager.instance.primaryFocus?.debugLabel,
         'dashboard Search',
       );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
